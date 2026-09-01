@@ -3443,6 +3443,7 @@ async function registerWebMCPTools() {
 function exposeLocalBridge() {
   window.webMCPStudio = Object.freeze({
     listTools: () => [...toolRegistry.keys()],
+    describeTools: () => [...toolRegistry.values()].map(({ name, description, parameters }) => ({ name, description, parameters })),
     callTool: async (name, args = {}) => {
       const tool = toolRegistry.get(name);
       if (!tool) throw new Error(`Unknown WebMCP tool: ${name}`);

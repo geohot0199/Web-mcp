@@ -250,6 +250,42 @@ npm run check
 
 ---
 
+## Public HTTP API — let *your* LLM drive the studio
+
+The WebMCP tools live in the browser, so the optional companion server (`server/http-api.mjs`, zero dependencies) bridges them onto a public HTTP endpoint: **your LLM calls plain JSON over HTTP, and the calls execute inside the open studio tab** — staged as proposals, gated by permissions, undoable, exactly like the built-in agent.
+
+```bash
+npm run serve          # serves the studio + API on PORT (default 8080), bound to 0.0.0.0
+ORBIT_API_KEY=secret npm run serve   # optionally require Authorization: Bearer <key> on /api/webmcp/*
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api` | Self-describing API index |
+| `GET /api/webmcp/health` | `{ studio_connected, calls_served, … }` — is a studio tab attached to the bridge? |
+| `GET /api/webmcp/tools` | Every tool's name, description and JSON schema (point your LLM's tool loader here) |
+| `POST /api/webmcp/route` | `{ text }` → deterministic intent routing `{ tool, parameters, requiresHumanApproval, sensitive }` — works with no tab connected |
+| `POST /api/webmcp/call` | `{ tool, arguments }` → executes the tool in the studio tab and returns its JSON result, including `live_context` |
+
+```bash
+BASE="http://localhost:8080"   # or your deployed origin
+curl "$BASE/api/webmcp/health"
+curl -X POST "$BASE/api/webmcp/route" -H 'Content-Type: application/json' \
+  -d '{"text":"make the body taller"}'
+curl -X POST "$BASE/api/webmcp/call"  -H 'Content-Type: application/json' \
+  -d '{"tool":"get_scene"}'
+curl -X POST "$BASE/api/webmcp/call"  -H 'Content-Type: application/json' \
+  -d '{"tool":"edit_geometry","arguments":{"operation":"stretch","axis":"y","factor":1.4}}'
+```
+
+Notes for agent builders:
+
+- **A studio tab is the runtime.** `call` and `tools` need one open (health tells you); they return `503 no_studio_connected` otherwise. The tab long-polls the bridge over the same origin — no WebSockets, no CORS setup, and browser code never references `localhost`, so it works behind HTTPS preview proxies.
+- **Safety semantics survive the trip.** Mutations still land as visible proposal cards awaiting human approval (`apply_approved_proposal` reports the outcome); `export_stl`/`share_scene` stay sensitive; every result carries `live_context` (selection, permissions, stats) so your LLM never acts on stale state.
+- The wire-up is two small pieces: `js/http-bridge-client.js` (in-tab poller) and `server/http-api.mjs` (queue + static host). Everything else — the 32 tools, approvals, undo — is untouched.
+
+---
+
 ## Run it
 
 ```bash
