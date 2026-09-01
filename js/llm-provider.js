@@ -23,13 +23,13 @@ export const LLM_PROVIDERS = {
   anthropic: {
     label: 'Anthropic Claude',
     short: 'Claude',
-    defaultModel: 'claude-3-5-sonnet-latest',
+    defaultModel: 'claude-sonnet-4-20250514',
     defaultBaseUrl: 'https://api.anthropic.com/v1/messages'
   },
   gemini: {
     label: 'Google Gemini',
     short: 'Gemini',
-    defaultModel: 'gemini-1.5-flash',
+    defaultModel: 'gemini-2.5-flash',
     defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta'
   },
   custom: {
@@ -124,7 +124,7 @@ function buildBody(config, { system, user }) {
   if (clean.provider === 'anthropic') {
     const body = {
       model: clean.model,
-      max_tokens: 900,
+      max_tokens: 1600,
       temperature: 0.4,
       messages: [{ role: 'user', content: userText }]
     };
@@ -135,7 +135,7 @@ function buildBody(config, { system, user }) {
     const content = systemText ? `${systemText}\n\n${userText}` : userText;
     return {
       contents: [{ role: 'user', parts: [{ text: content }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 900 }
+      generationConfig: { temperature: 0.4, maxOutputTokens: 1600 }
     };
   }
   const messages = [];
@@ -145,7 +145,7 @@ function buildBody(config, { system, user }) {
     model: clean.model,
     messages,
     temperature: 0.4,
-    max_tokens: 900
+    max_tokens: 1600
   };
 }
 

@@ -249,7 +249,7 @@ npm run check
 
 **Safety model.** Read/write separation · everything staged before it happens · human approval on every mutation · six permission gates · object-level edit locks · per-run transactional undo · version checkpoints · complete activity audit. Export and destructive actions are sensitive in every mode.
 
-**Privacy model.** No backend. No model-data upload, ever. Share links and STL files are local artifacts. Local storage is a convenience, not a service — and it’s re-validated field by field on restore. If you opt into a personal LLM API key for open-ended planning, that key is intentionally *not* persisted: it stays in the page's memory and is cleared on refresh/close or with **Wipe everything**.
+**Privacy model.** No backend. Share links and STL files are local artifacts — no Orbit server is involved. Local storage is a convenience, not a service — and it’s re-validated field by field on restore. If you opt into a personal LLM API key for open-ended planning, your scene objects (geometry, positions, materials, colours, tags, constraints) and remembered design preferences are sent directly to the provider you chose so the model can propose changes; nothing is sent to any Orbit server. That key is intentionally *not* persisted: it stays in the page's memory and is cleared on refresh/close or with **Wipe everything**.
 
 ---
 

@@ -148,13 +148,18 @@
                 <button type="button" data-material="wood">Grain</button>
                 <button type="button" data-material="emissive">Emissive</button>
               </div>
-              <div class="color-row" aria-label="Object value">
+              <div class="color-row" aria-label="Object colour">
+                <button class="color-swatch" type="button" data-color="#808080" style="--swatch:#808080" aria-label="Default grey"></button>
                 <button class="color-swatch" type="button" data-color="#111111" style="--swatch:#111111" aria-label="Ink"></button>
-                <button class="color-swatch" type="button" data-color="#3d3d3d" style="--swatch:#3d3d3d" aria-label="Graphite"></button>
-                <button class="color-swatch" type="button" data-color="#8a8a8a" style="--swatch:#8a8a8a" aria-label="Grey"></button>
-                <button class="color-swatch" type="button" data-color="#c8c8c8" style="--swatch:#c8c8c8" aria-label="Silver"></button>
                 <button class="color-swatch" type="button" data-color="#fafafa" style="--swatch:#fafafa" aria-label="White"></button>
-                <input id="object-color-input" type="color" value="#9c9c9c" aria-label="Choose a custom object value">
+                <button class="color-swatch" type="button" data-color="#d94040" style="--swatch:#d94040" aria-label="Red"></button>
+                <button class="color-swatch" type="button" data-color="#e87030" style="--swatch:#e87030" aria-label="Orange"></button>
+                <button class="color-swatch" type="button" data-color="#d9c830" style="--swatch:#d9c830" aria-label="Yellow"></button>
+                <button class="color-swatch" type="button" data-color="#40a848" style="--swatch:#40a848" aria-label="Green"></button>
+                <button class="color-swatch" type="button" data-color="#3868d0" style="--swatch:#3868d0" aria-label="Blue"></button>
+                <button class="color-swatch" type="button" data-color="#7840c0" style="--swatch:#7840c0" aria-label="Purple"></button>
+                <button class="color-swatch" type="button" data-color="#e070a0" style="--swatch:#e070a0" aria-label="Pink"></button>
+                <input id="object-color-input" type="color" value="#808080" aria-label="Choose a custom object colour">
               </div>
             </div>
 
@@ -423,7 +428,7 @@
       <button class="modal-close" type="button" data-close-modal="api-key-modal" aria-label="Close API key settings">×</button>
       <span class="eyebrow">Bring your own model</span>
       <h2 id="api-key-title">Use your own LLM API key</h2>
-      <p>No ChatGPT account required. Add an API key from OpenAI-compatible, Anthropic, Gemini, or a private/local proxy directly in this browser. The key stays in this tab's memory only — never written to storage or uploaded anywhere by Orbit.</p>
+      <p>No ChatGPT account required. Add an API key from OpenAI-compatible, Anthropic, Gemini, or a private/local proxy directly in this browser. The key stays in this tab's memory only — never written to storage or uploaded anywhere by Orbit. When you send a creative request, your scene objects (geometry, positions, materials, colours, tags) and remembered design preferences are sent to the provider you chose so the model can propose changes.</p>
 
       <div id="api-status-card" class="api-status-card">
         <span class="status-orb"><i></i></span>
@@ -453,7 +458,7 @@
         </label>
       </div>
 
-      <div class="api-note">Your key is held in memory for this tab only. It is never saved to localStorage, never leaves the browser except to your chosen provider, and is cleared automatically on refresh/close. If a provider blocks direct browser requests, point Base URL at a small CORS proxy.</div>
+      <div class="api-note">Your key is held in memory for this tab only. It is never saved to localStorage and is cleared automatically on refresh/close. When you ask Orbit to build something, your current scene (objects, geometry, materials, colours, tags, constraints, and remembered preferences) is sent to the provider you chose so the model can propose a plan. If a provider blocks direct browser requests, point Base URL at a small CORS proxy.</div>
 
       <div id="llm-test-result" class="llm-test-result" aria-live="polite"></div>
 
