@@ -204,12 +204,13 @@ function nextObjectName(type) {
 }
 
 function normaliseDesignContext(raw = {}) {
+  const source = raw || {};
   return {
-    intent: String(raw.intent || '').slice(0, 300),
-    style: String(raw.style || 'Exploratory').slice(0, 48),
-    updatedAt: raw.updatedAt || null,
-    preferences: Array.isArray(raw.preferences) ? [...new Set(raw.preferences.map((preference) => String(preference).trim().slice(0, 70)).filter(Boolean))].slice(0, 12) : [],
-    persona: String(raw.persona || 'Adaptive co-designer').slice(0, 48)
+    intent: String(source.intent || '').slice(0, 300),
+    style: String(source.style || 'Exploratory').slice(0, 48),
+    updatedAt: source.updatedAt || null,
+    preferences: Array.isArray(source.preferences) ? [...new Set(source.preferences.map((preference) => String(preference).trim().slice(0, 70)).filter(Boolean))].slice(0, 12) : [],
+    persona: String(source.persona || 'Adaptive co-designer').slice(0, 48)
   };
 }
 
@@ -354,7 +355,7 @@ function loadPersistedWorkspace() {
 
   outcome.versions = (Array.isArray(saved.versions) ? saved.versions : []).map(normaliseVersionRecord).filter(Boolean).slice(-12);
 
-  if (saved.scene && Array.isArray(saved.scene.objects) && saved.scene.objects.length) {
+  if (saved.scene && Array.isArray(saved.scene.objects)) {
     try {
       state.versions = outcome.versions;
       hydrateScene(saved.scene);
@@ -2725,6 +2726,59 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
     addMessage('agent', matches.length ? `I found ${matches.length} match${matches.length === 1 ? '' : 'es'}: ${matches.map((object) => object.name).join(', ')}.${matches[0] ? ` I selected ${matches[0].name}.` : ''}` : `I could not find a form matching “${routedIntent.parameters.query}”.`);
     return;
   }
+  /*
+   * Codex-style read and refine routes. The router recognises these tools, so they must
+   * be answered here: letting them fall through to buildPlan() would turn a read request
+   * like “Inspect this object” or “What textures are available?” into a three-form
+   * starter concept instead of the requested read-only information.
+   */
+  if (routedIntent.tool === 'inspect_object') {
+    const requestedId = routedIntent.parameters.object_id === '$selected' || !routedIntent.parameters.object_id ? state.selectedId : routedIntent.parameters.object_id;
+    const inspection = inspectObjectRead(requestedId);
+    if (!inspection.success) {
+      setAgentStatus('ready', 'Inspection unavailable', inspection.message);
+      addMessage('agent', inspection.message);
+      return;
+    }
+    const { geometry, surface, annotations, nearest_objects, locked } = inspection;
+    const size = geometry.world_size.map((value) => value.toFixed(2)).join(' × ');
+    setAgentStatus('ready', 'Object inspected', `${geometry.type_label} · ${geometry.detail_label} · ≈${geometry.triangle_estimate} triangles`);
+    addMessage('agent', `${inspection.object.name} is a ${geometry.type_label.toLowerCase()} measuring ${size} units${geometry.resting_on_ground ? ', resting on the ground plane' : ''}. It uses ${geometry.detail_label.toLowerCase()} resolution (≈${geometry.triangle_estimate} triangles) with a ${surface.finish_label.toLowerCase()} finish${surface.texture_label !== 'None' ? ` under a ${surface.texture_label.toLowerCase()} texture` : ''} (roughness ${surface.roughness}, metalness ${surface.metalness}).`
+      + (annotations.length ? ` It carries ${annotations.length} annotation${annotations.length === 1 ? '' : 's'}: “${annotations.map((item) => item.text).join('”, “')}”.` : '')
+      + (nearest_objects.length ? ` Nearest forms: ${nearest_objects.slice(0, 3).map((item) => `${item.name} ${item.distance}u away`).join(', ')}.` : '')
+      + (locked ? ' It is locked while the agent is working on it.' : ' Tell me how to change its geometry or surface and I will stage the exact diff.'));
+    addActivity(`Inspected ${inspection.object.name}`, 'Deep object read served from live scene state.', 'agent');
+    return;
+  }
+  if (routedIntent.tool === 'list_surface_options') {
+    const options = listSurfaceOptionsRead();
+    if (!options.success) {
+      setAgentStatus('ready', 'Surface options unavailable', options.message);
+      addMessage('agent', options.message);
+      return;
+    }
+    const totalOptions = options.textures.length + options.finishes.length + options.detail_levels.length + options.primitives.length;
+    setAgentStatus('ready', 'Surface options listed', `${totalOptions} real options across textures, finishes, resolutions, and primitives.`);
+    addMessage('agent', `Here is everything the studio can actually render, so a refinement is planned against real options instead of guessed names. Textures: ${options.textures.map((item) => item.label).join(', ')}. Finishes: ${options.finishes.map((item) => item.label).join(', ')}. Mesh resolutions: ${options.detail_levels.map((item) => item.label).join(', ')}. Primitives: ${options.primitives.map((item) => item.label).join(', ')}. ${options.palette} Select a form and name any of these and I will stage the change.`);
+    addActivity('Listed surface options', 'Full texture, finish, resolution, and primitive option set served to the human.', 'agent');
+    return;
+  }
+  if (routedIntent.tool === 'edit_geometry' || routedIntent.tool === 'refine_texture') {
+    // A pending draft may be the target of this wording after all (“metal”, a colour,
+    // “compact”): revise it in place first, exactly as the pre-existing path did.
+    if (refinePendingProposal(request)) return;
+    const isGeometry = routedIntent.tool === 'edit_geometry';
+    const targetId = routedIntent.parameters.object_id === '$selected' || !routedIntent.parameters.object_id ? state.selectedId : routedIntent.parameters.object_id;
+    const result = isGeometry ? stageGeometryEdit(targetId, routedIntent.parameters) : stageTextureRefinement(targetId, routedIntent.parameters);
+    if (!result.success) {
+      setAgentStatus('ready', isGeometry ? 'Geometry edit blocked' : 'Surface refinement blocked', result.message);
+      addMessage('agent', result.message);
+      return;
+    }
+    addMessage('agent', `I staged “${result.proposal.title}” as a visible, reversible diff. Approve it and I will apply the change live in the viewport — or toggle off steps, revise the wording, or reject it first.`);
+    if (state.currentMode === 'direct') await executePendingProposal({ autoApproved: true });
+    return;
+  }
   if (routedIntent.tool === 'analyze_design') {
     setAgentStatus('thinking', 'Inspecting the shared scene', 'Reading geometry, material, symmetry, and active constraints.');
     await delay(260);
@@ -2937,6 +2991,102 @@ function describeGeometryEdit(args = {}) {
   }
 }
 
+/*
+ * Shared read and staging routes for the Codex-style inspect → edit → refine loop.
+ * The WebMCP tool handlers and the local intent router both dispatch into these same
+ * functions, so a request behaves identically no matter which surface it arrived on.
+ * Keeping the logic here (and not only inside registerTool) is what guarantees the
+ * router's read routes are answered as reads — never silently turned into a plan.
+ */
+function inspectObjectRead(objectId) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: objectId ? `Object ${objectId} was not found.` : 'No object is selected. Click a form (or ask me to find one) before I can do a deep read.' };
+  const bounds = objectBounds(object);
+  const neighbours = state.objects
+    .filter((candidate) => candidate.id !== object.id)
+    .map((candidate) => ({ id: candidate.id, name: candidate.name, distance: Number(Math.hypot(...candidate.position.map((value, axis) => value - object.position[axis])).toFixed(2)) }))
+    .sort((first, second) => first.distance - second.distance)
+    .slice(0, 4);
+  return {
+    success: true,
+    object: clone(object),
+    geometry: {
+      type: object.type,
+      type_label: TYPE_LABELS[object.type],
+      detail: object.detail,
+      detail_label: DETAIL_LEVELS[object.detail],
+      triangle_estimate: estimateTriangles(object),
+      world_bounds: bounds,
+      world_size: bounds.size.map((value) => Number(value.toFixed(3))),
+      resting_on_ground: Math.abs(bounds.min[1]) < .05
+    },
+    surface: materialSummary(object),
+    annotations: state.comments.filter((comment) => comment.objectId === object.id).map(({ text, author, createdAt }) => ({ text, author, created_at: createdAt })),
+    nearest_objects: neighbours,
+    locked: isObjectLocked(object.id)
+  };
+}
+
+function listSurfaceOptionsRead() {
+  return readAllowed() || ({
+    success: true,
+    textures: TEXTURE_NAMES.map((name) => ({ id: name, label: TEXTURES[name].label })),
+    finishes: Object.entries(MATERIALS).map(([id, preset]) => ({ id, label: preset.label, roughness: preset.roughness, metalness: preset.metalness })),
+    detail_levels: Object.entries(DETAIL_LEVELS).map(([id, label]) => ({ id, label })),
+    primitives: TYPES.map((type) => ({ id: type, label: TYPE_LABELS[type] })),
+    palette: 'Monochrome. Values run from #111111 to #fafafa.'
+  });
+}
+
+function stageGeometryEdit(objectId, args = {}) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: 'No target object. Select a form first, or name the object you want changed.' };
+  let patch;
+  try { patch = geometryPatch(object, args); }
+  catch (error) { return { success: false, message: error.message }; }
+  return stageExternalPlan({
+    title: `${describeGeometryEdit(args)} · ${object.name}`,
+    description: 'A single geometry change to the referenced object.',
+    why: args.why || 'Geometry changes stay visible and reversible while the human watches them apply.',
+    intent: `Edit geometry of ${object.name}`,
+    style: state.designContext.style,
+    actions: [{ kind: 'modify', objectId: object.id, patch, label: `${describeGeometryEdit(args)} ${object.name}` }]
+  });
+}
+
+function stageTextureRefinement(objectId, args = {}) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: 'No target object. Select a form first, or name the object you want changed.' };
+  const patch = {};
+  if (args.texture !== undefined) {
+    if (!TEXTURES[args.texture]) return { success: false, message: `Unknown texture “${args.texture}”. Available: ${TEXTURE_NAMES.join(', ')}.` };
+    patch.texture = args.texture;
+  }
+  if (args.texture_scale !== undefined) patch.textureScale = args.texture_scale;
+  if (args.finish !== undefined) {
+    if (!MATERIALS[args.finish]) return { success: false, message: `Unknown finish “${args.finish}”. Available: ${Object.keys(MATERIALS).join(', ')}.` };
+    patch.material = args.finish;
+  }
+  if (args.roughness !== undefined) patch.roughness = args.roughness;
+  if (args.metalness !== undefined) patch.metalness = args.metalness;
+  if (args.color !== undefined) {
+    if (!validColor(args.color)) return { success: false, message: 'Color must be a hex value such as #d6d6d6.' };
+    patch.color = args.color;
+  }
+  if (!Object.keys(patch).length) return { success: false, message: 'Provide at least one surface property to refine.' };
+  return stageExternalPlan({
+    title: `Refine surface · ${object.name}`,
+    description: 'A surface and texture refinement on the referenced object.',
+    why: args.why || 'Texture refinements stay visible and reversible while the human watches them apply.',
+    intent: `Refine the surface of ${object.name}`,
+    style: state.designContext.style,
+    actions: [{ kind: 'modify', objectId: object.id, patch, label: `Refine surface of ${object.name}` }]
+  });
+}
+
 function externalChangeToAction(change = {}) {
   const operation = change.operation || change.kind;
   if (['create', 'add'].includes(operation)) return { kind: 'add', object: change.object || change.value || {} };
@@ -3094,35 +3244,7 @@ function defineTools() {
     name: 'inspect_object',
     description: 'Inspect one object in depth: geometry type, resolution, transform, world bounds, resolved surface treatment, triangle estimate, annotations and nearby objects. Call this before changing geometry or textures.',
     parameters: { type: 'object', properties: { object_id: { type: 'string', description: 'Object id. Defaults to the human’s current selection.' } }, required: [] },
-    execute: async ({ object_id } = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (object_id || state.selectedId));
-      if (!object) return { success: false, message: object_id ? `Object ${object_id} was not found.` : 'No object is selected. Pass object_id or ask the human to select a form.' };
-      const bounds = objectBounds(object);
-      const neighbours = state.objects
-        .filter((candidate) => candidate.id !== object.id)
-        .map((candidate) => ({ id: candidate.id, name: candidate.name, distance: Number(Math.hypot(...candidate.position.map((value, axis) => value - object.position[axis])).toFixed(2)) }))
-        .sort((first, second) => first.distance - second.distance)
-        .slice(0, 4);
-      return {
-        success: true,
-        object: clone(object),
-        geometry: {
-          type: object.type,
-          type_label: TYPE_LABELS[object.type],
-          detail: object.detail,
-          detail_label: DETAIL_LEVELS[object.detail],
-          triangle_estimate: estimateTriangles(object),
-          world_bounds: bounds,
-          world_size: bounds.size.map((value) => Number(value.toFixed(3))),
-          resting_on_ground: Math.abs(bounds.min[1]) < .05
-        },
-        surface: materialSummary(object),
-        annotations: state.comments.filter((comment) => comment.objectId === object.id).map(({ text, author, createdAt }) => ({ text, author, created_at: createdAt })),
-        nearest_objects: neighbours,
-        locked: isObjectLocked(object.id)
-      };
-    }
+    execute: async ({ object_id } = {}) => inspectObjectRead(object_id || state.selectedId)
   });
   registerTool({
     name: 'edit_geometry',
@@ -3142,22 +3264,7 @@ function defineTools() {
       },
       required: ['operation']
     },
-    execute: async (args = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
-      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
-      let patch;
-      try { patch = geometryPatch(object, args); }
-      catch (error) { return { success: false, message: error.message }; }
-      return stageExternalPlan({
-        title: `${describeGeometryEdit(args)} · ${object.name}`,
-        description: 'A single geometry change to the referenced object.',
-        why: args.why || 'Geometry changes stay visible and reversible while the human watches them apply.',
-        intent: `Edit geometry of ${object.name}`,
-        style: state.designContext.style,
-        actions: [{ kind: 'modify', objectId: object.id, patch, label: `${describeGeometryEdit(args)} ${object.name}` }]
-      });
-    }
+    execute: async (args = {}) => stageGeometryEdit(args.object_id || state.selectedId, args)
   });
   registerTool({
     name: 'refine_texture',
@@ -3176,49 +3283,13 @@ function defineTools() {
       },
       required: []
     },
-    execute: async (args = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
-      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
-      const patch = {};
-      if (args.texture !== undefined) {
-        if (!TEXTURES[args.texture]) return { success: false, message: `Unknown texture “${args.texture}”. Available: ${TEXTURE_NAMES.join(', ')}.` };
-        patch.texture = args.texture;
-      }
-      if (args.texture_scale !== undefined) patch.textureScale = args.texture_scale;
-      if (args.finish !== undefined) {
-        if (!MATERIALS[args.finish]) return { success: false, message: `Unknown finish “${args.finish}”. Available: ${Object.keys(MATERIALS).join(', ')}.` };
-        patch.material = args.finish;
-      }
-      if (args.roughness !== undefined) patch.roughness = args.roughness;
-      if (args.metalness !== undefined) patch.metalness = args.metalness;
-      if (args.color !== undefined) {
-        if (!validColor(args.color)) return { success: false, message: 'Color must be a hex value such as #d6d6d6.' };
-        patch.color = args.color;
-      }
-      if (!Object.keys(patch).length) return { success: false, message: 'Provide at least one surface property to refine.' };
-      return stageExternalPlan({
-        title: `Refine surface · ${object.name}`,
-        description: 'A surface and texture refinement on the referenced object.',
-        why: args.why || 'Texture refinements stay visible and reversible while the human watches them apply.',
-        intent: `Refine the surface of ${object.name}`,
-        style: state.designContext.style,
-        actions: [{ kind: 'modify', objectId: object.id, patch, label: `Refine surface of ${object.name}` }]
-      });
-    }
+    execute: async (args = {}) => stageTextureRefinement(args.object_id || state.selectedId, args)
   });
   registerTool({
     name: 'list_surface_options',
     description: 'List every procedural texture, finish and geometry resolution the studio supports, so a refinement can be planned against real options instead of guessed names.',
     parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => readAllowed() || ({
-      success: true,
-      textures: TEXTURE_NAMES.map((name) => ({ id: name, label: TEXTURES[name].label })),
-      finishes: Object.entries(MATERIALS).map(([id, preset]) => ({ id, label: preset.label, roughness: preset.roughness, metalness: preset.metalness })),
-      detail_levels: Object.entries(DETAIL_LEVELS).map(([id, label]) => ({ id, label })),
-      primitives: TYPES.map((type) => ({ id: type, label: TYPE_LABELS[type] })),
-      palette: 'Monochrome. Values run from #111111 to #fafafa.'
-    })
+    execute: async () => listSurfaceOptionsRead()
   });
   registerTool({
     name: 'apply_approved_proposal',
@@ -3678,7 +3749,9 @@ async function bootstrap() {
   publishSelectionContext();
   initialiseVoiceInput();
   const readyDetail = restored.restoredScene
-    ? `Restored your saved workspace: ${state.objects.length} object${state.objects.length === 1 ? '' : 's'} and ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'}.`
+    ? (state.objects.length
+      ? `Restored your saved workspace: ${state.objects.length} object${state.objects.length === 1 ? '' : 's'} and ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'}.`
+      : `Restored your saved workspace: the scene is empty, but your ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'} and project memory survived the reload.`)
     : restored.restoredMemory
       ? 'The human and agent now share the same scene state and remembered project preferences.'
       : 'The human and agent now share the same inspectable scene state.';

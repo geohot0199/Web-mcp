@@ -7,6 +7,7 @@
  * the key parameters, and preserves approval/sensitive-action guards over a
  * varied prompt set.
  */
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { routePrompt } from '../js/agent-router.js';
 
@@ -33,13 +34,35 @@ for (const test of fixture) {
   else passed += 1;
 }
 
+/*
+ * Regression guard for the PR #3 review finding “Read routes create edit plans”:
+ * every tool the router can return must be explicitly dispatched in
+ * handleAgentRequest() — unless it is one of the plan-building tools that
+ * intentionally fall through to buildPlan(). Without this check a newly routed tool
+ * would silently become a starter-concept proposal for read-only requests.
+ */
+const routerSource = readFileSync(new URL('../js/agent-router.js', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+const routedTools = [...new Set([...routerSource.matchAll(/route\('([a-z_]+)'/g)].map((match) => match[1]))];
+const planBuilderTools = new Set(['propose_changes', 'create_composite_object', 'modify_object']);
+const undispatchedTools = routedTools.filter(
+  (tool) => !planBuilderTools.has(tool) && !appSource.includes(`routedIntent.tool === '${tool}'`)
+);
+
 console.log(`\nOrbit agent workflow evaluation: ${passed}/${fixture.length} passed`);
 for (const failure of failures) {
   console.error(`\n✗ ${failure.id} — ${failure.prompt}`);
   failure.mismatches.forEach((mismatch) => console.error(`  ${mismatch}`));
 }
 
+if (undispatchedTools.length) {
+  console.error('\n✗ Dispatch coverage — routed tools with no handleAgentRequest() branch:');
+  undispatchedTools.forEach((tool) => console.error(`  ${tool} would silently fall through to buildPlan()`));
+} else {
+  console.log(`Dispatch coverage: all ${routedTools.length} router tools are explicitly handled or are intentional plan builders.`);
+}
+
 const sensitive = fixture.filter((test) => test.expected.sensitive).length;
 const approved = fixture.filter((test) => test.expected.approval).length;
 console.log(`Coverage: ${fixture.length} prompts · ${approved} approval-gated · ${sensitive} sensitive-action cases`);
-process.exitCode = failures.length ? 1 : 0;
+process.exitCode = failures.length || undispatchedTools.length ? 1 : 0;
