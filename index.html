@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebMCP 3D Modeling Agentic Collaboration</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <!-- Collaboration Status Bar -->
+    <div id="collab-bar" class="collab-bar">
+      <span id="collab-status" class="collab-status">🤖 Agent ready — ready for collaboration</span>
+      <button id="accept-agent-btn" class="accept-agent-btn hidden">Accept Suggestion</button>
+      <button id="reject-agent-btn" class="reject-agent-btn">Reject</button>
+    </div>
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Right Panel: Tools & Properties -->
+    <div id="right-panel" class="panel">
+      <div class="panel-section">
+        <h3>➕ Add Primitive</h3>
+        <div class="tool-grid">
+          <button class="tool-btn" data-primitive="cube">Cube</button>
+          <button class="tool-btn" data-primitive="sphere">Sphere</button>
+          <button class="tool-btn" data-primitive="cylinder">Cylinder</button>
+          <button class="tool-btn" data-primitive="cone">Cone</button>
+          <button class="tool-btn" data-primitive="plane">Plane</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>🛠️ Transform</h3>
+        <div class="tool-grid">
+          <button class="tool-btn" data-action="move">Move</button>
+          <button class="tool-btn" data-action="rotate">Rotate</button>
+          <button class="tool-btn" data-action="scale">Scale</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>✏️ Material</h3>
+        <div class="tool-grid">
+          <button class="tool-btn" data-material="metal">Metal</button>
+          <button class="tool-btn" data-material="plastic">Plastic</button>
+          <button class="tool-btn" data-material="glass">Glass</button>
+          <button class="tool-btn" data-material="wood">Wood</button>
+          <button class="tool-btn" data-material="emissive">Emissive</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>🎛️ Controls</h3>
+        <div class="tool-grid">
+          <button class="tool-btn" onclick="snapToGrid()">Grid Snap</button>
+          <button class="tool-btn" onclick="resetView()">Reset View</button>
+          <button class="tool-btn" onclick="exportSTL()">Export STL</button>
+          <button class="tool-btn" onclick="shareSession()">Share Link</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Panel: Undo/Redo & History -->
+    <div id="bottom-panel" class="panel">
+      <div class="panel-section">
+        <h3>↩️ Undo / Redo</h3>
+        <div class="undo-redo">
+          <button id="undo-btn" class="undo-btn" disabled>Undo</button>
+          <button id="redo-btn" class="redo-btn" disabled>Redo</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>📜 History (click to snap)</h3>
+        <div id="history-list" class="history-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WebMCP Agent Tools Status -->
+  <div id="webmcp-status" class="webmcp-status hidden">
+    WebMCP Tools Registered: <span id="webmcp-tool-count"></span>
+  </div>
+
+  <script type="module">
+    // ============================
+    // Import Three.js via CDN
+    // ============================
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.0/build/three.module.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/controls/OrbitControls.js';
+    import { STLExporter } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/exporters/STLExporter.js';
+
+    // ============================
+    // Application State
+    // ============================
+    const state = {
+      objects: [],        // Array of {id, type, position, rotation, scale, material}
+      cameraPos: new THREE.Vector3(0, 2, 5),
+      selectedId: null,
+      undoStack: [],
+      redoStack: [],
+      maxStackSize: 50,
+      agentLastChange: null
+    };
+
+    // ============================
+    // Three.js Setup
+    // ============================
+    let scene, camera, renderer, controls;
+
+    function initThree() {
+      const container = document.getElementById('canvas-container');
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xf0f0f0);
+
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 2, 5);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2.1;
+
+      // Grid helper
+      const grid = new THREE.GridHelper(10, 10, 0x888888, 0xcccccc);
+      scene.add(grid);
+
+      // Axes helper
+      const axes = new THREE.AxesHelper(3);
+      scene.add(axes);
+
+      // Light
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+      scene.add(hemi);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(5, 10, 7.5);
+      scene.add(dirLight);
+
+      // Handle resize
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // Mouse events on canvas
+      renderer.domElement.addEventListener('click', onCanvasClick);
+      renderer.domElement.addEventListener('mousedown', onMouseDown);
+      renderer.domElement.addEventListener('mouseup', onMouseUp);
+      renderer.domElement.addEventListener('mousemove', onMouseMove);
+
+      // Keyboard
+      window.addEventListener('keydown', onKeyDown);
+
+      render();
+    }
+
+    function render() {
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(render);
+    }
+
+    // ============================
+    // Model State Management
+    // ============================
+    function generateId() {
+      return 'obj_' + Math.random().toString(36).substr(2, 9);
+    }
+
+    function getSelectedObject() {
+      return state.objects.find(o => o.id === state.selectedId);
+    }
+
+    // --- Clean Undo/Redo State Management ---
+
+    // Saves the CURRENT state to the undo stack and clears redo stack.
+    // Call this BEFORE making a change to the model state.
+    function beginUndoBatch(changeType) {
+      if (state.undoStack.length >= state.maxStackSize) {
+        state.undoStack.shift();
+      }
+      state.undoStack.push({
+        type: changeType,
+        objects: JSON.parse(JSON.stringify(state.objects)),
+        timestamp: Date.now()
+      });
+      state.redoStack = []; // clear redo on new undo
+      updateUndoRedoButtons();
+    }
+
+    function endUndoBatch() {
+      // No-op placeholder for symmetry; actual save happens in beginUndoBatch
+    }
+
+    function commitUndo() {
+      if (state.undoStack.length === 0) return null;
+      const last = state.undoStack.pop();
+      // Save current state to redo stack
+      state.redoStack.push({
+        type: 'redo',
+        objects: JSON.parse(JSON.stringify(state.objects)),
+        timestamp: Date.now()
+      });
+      // Restore the state from the undo snapshot
+      state.objects = last.objects;
+      updateUI();
+      updateHistory();
+      return last;
+    }
+
+    function commitRedo() {
+      if (state.redoStack.length === 0) return null;
+      const last = state.redoStack.pop();
+      // Save current state to undo stack
+      state.undoStack.push({
+        type: 'undo',
+        objects: JSON.parse(JSON.stringify(state.objects)),
+        timestamp: Date.now()
+      });
+      // Restore the state from the redo snapshot
+      state.objects = last.objects;
+      updateUI();
+      updateHistory();
+    }
+
+    function updateUndoRedoButtons() {
+      const undoBtn = document.getElementById('undo-btn');
+      const redoBtn = document.getElementById('redo-btn');
+      undoBtn.disabled = state.undoStack.length === 0;
+      redoBtn.disabled = state.redoStack.length === 0;
+    }
+
+    // ============================
+    // UI Update Functions
+    // ============================
+    function updateScene() {
+      // Remove existing objects from scene (except grid/axes)
+      scene.traverse(child => {
+        if (child.userData.isThreeObj) scene.remove(child);
+      });
+
+      // Add current state objects
+      state.objects.forEach(obj => {
+        const geometry = getGeometry(obj.type);
+        const material = getMaterial(obj.material);
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.userData.isThreeObj = true;
+        mesh.id = obj.id;
+        mesh.position.set(...obj.position);
+        mesh.rotation.set(...obj.rotation);
+        mesh.scale.set(...obj.scale);
+        scene.add(mesh);
+      });
+
+      updateHistory();
+      render();
+    }
+
+    function getGeometry(type) {
+      const dict = {
+        cube: new THREE.BoxGeometry(1, 1, 1),
+        sphere: new THREE.SphereGeometry(0.5, 32, 32),
+        cylinder: new THREE.CylinderGeometry(0.5, 0.5, 1, 32),
+        cone: new THREE.ConeGeometry(0.5, 1, 32),
+        plane: new THREE.PlaneGeometry(5, 5)
+      };
+      return (dict[type] || dict.cube);
+    }
+
+    function getMaterial(name) {
+      const dict = {
+        metal: new THREE.MeshStandardMaterial({ color: 0x8c98ff, metalness: 0.8, roughness: 0.2 }),
+        plastic: new THREE.MeshStandardMaterial({ color: 0xffd580, metalness: 0.2, roughness: 0.8 }),
+        glass: new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.0, roughness: 0.1, transparent: true, opacity: 0.6 }),
+        wood: new THREE.MeshStandardMaterial({ color: 0xdeb483, metalness: 0.1, roughness: 0.9 }),
+        emissive: new THREE.MeshStandardMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 1.0, metalness: 0.0, roughness: 0.0 })
+      };
+      return (dict[name] || dict.plastic);
+    }
+
+    function updateUI() {
+      document.getElementById('undo-btn').disabled = state.undoStack.length === 0;
+      document.getElementById('redo-btn').disabled = state.redoStack.length === 0;
+      updateHistory();
+    }
+
+    function updateHistory() {
+      const list = document.getElementById('history-list');
+      list.innerHTML = '';
+      // Show last 20 snapshot timestamps/ops
+      const history = [...state.undoStack].reverse().slice(0, 20).concat([...state.redoStack].reverse().slice(0, 20));
+      history.forEach(entry => {
+        const btn = document.createElement('button');
+        btn.className = 'history-btn';
+        btn.textContent = `${entry.type} @ ${new Date(entry.timestamp).toLocaleTimeString()}`;
+        btn.onclick = () => snapToSnapshot(entry);
+        list.appendChild(btn);
+      });
+    }
+
+    function snapToSnapshot(entry) {
+      // Directly restore the state from the snapshot entry
+      state.objects = JSON.parse(JSON.stringify(entry.objects));
+      updateScene();
+      updateUI();
+      updateHistory();
+    }
+
+    // ============================
+    // Human UI Actions
+    // ============================
+    function onCanvasClick(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width * 2 - 1;
+      const y = -(event.clientY - rect.top) / rect.height * 2 + 1;
+
+      // Raycast from camera
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+      const intersects = raycaster.intersectObjects(
+        scene.children.filter(c => c.userData && c.userData.isThreeObj)
+      );
+
+      if (intersects.length > 0) {
+        const mesh = intersects[0];
+        state.selectedId = mesh.id;
+        // Highlight selected
+        scene.traverse(child => {
+          if (child.userData.isThreeObj) {
+            child.material.emissive = new THREE.Color(0x333333);
+          }
+        });
+        mesh.material.emissive = new THREE.Color(0xffd700);
+        updateUI();
+      } else {
+        state.selectedId = null;
+        updateUI();
+      }
+    }
+
+    function onMouseDown(event) {
+      // Support for orbit with modifier instructions
+    }
+
+    function onMouseUp(event) {
+      // No auto-undo on mouse release — only explicit actions (keys, agent tools)
+    }
+
+    function onMouseMove(event) {
+      // Continuous transform feedback
+    }
+
+    function onKeyDown(event) {
+      if (!state.selectedId) return;
+      const step = 0.1;
+      const rotStep = Math.PI / 12; // 15 degrees
+      const scaleStep = 0.1;
+
+      // Begin undo batch before making changes
+      beginUndoBatch('human_move');
+
+      switch(event.key) {
+        case 'ArrowLeft': moveSelected(-step, 0, 0); break;
+        case 'ArrowRight': moveSelected(step, 0, 0); break;
+        case 'ArrowUp': moveSelected(0, step, 0); break;
+        case 'ArrowDown': moveSelected(0, -step, 0); break;
+        case '=': case '+': scaleSelected(scaleStep); break;
+        case '-': scaleSelected(-scaleStep); break;
+        case 'r': rotateSelected('x', rotStep); break;
+        case 'R': rotateSelected('y', rotStep); break;
+        case 't': moveSelected(0, 0, step); break; // forward
+      }
+
+      // Commit the undo (finalize the snapshot)
+      commitUndo();
+      updateScene();
+    }
+
+    function moveSelected(dx, dy, dz) {
+      const obj = getSelectedObject();
+      if (!obj) return;
+      obj.position = [
+        (obj.position[0] || 0) + dx,
+        (obj.position[1] || 0) + dy,
+        (obj.position[2] || 0) + dz
+      ];
+    }
+
+    function rotateSelected(axis, degrees) {
+      const obj = getSelectedObject();
+      if (!obj) return;
+      const rad = (degrees * Math.PI) / 180;
+      if (axis === 'x') obj.rotation[0] = (obj.rotation[0] || 0) + rad;
+      if (axis === 'y') obj.rotation[1] = (obj.rotation[1] || 0) + rad;
+      if (axis === 'z') obj.rotation[2] = (obj.rotation[2] || 0) + rad;
+    }
+
+    function scaleSelected(factor) {
+      const obj = getSelectedObject();
+      if (!obj) return;
+      const currentScale = obj.scale[0] || 1;
+      obj.scale = [currentScale + factor, currentScale + factor, currentScale + factor];
+    }
+
+    function snapToGrid() {
+      const obj = getSelectedObject();
+      if (!obj) return;
+      // Snap position to nearest 1
+      obj.position = obj.position.map(p => Math.round(p));
+      // Snap rotation to 15-degree multiples
+      obj.rotation = obj.rotation.map(r => Math.round(r / (Math.PI/12)) * (Math.PI/12));
+      updateScene();
+    }
+
+    function resetView() {
+      controls.reset();
+      controls.target.set(0, 0, 0);
+    }
+
+    function exportSTL() {
+      const exporter = new STLExporter();
+      const serializer = new XMLSerializer();
+      const stlData = exporter.parse(scene);
+      const blob = new Blob([serializer.serializeString(stlData)], { type: 'application/slash-stl' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `webmcp-model-${Date.now()}.stl`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function shareSession() {
+      const stateJson = JSON.stringify(state);
+      const base64 = btoa(stateJson);
+      const link = `${window.location.origin}/?model=${base64}`;
+      prompt('Share this link with yourself or the agent:', link);
+    }
+
+    // ============================
+    // WebMCP Agent Tool Registration
+    // ============================
+    async function registerWebMCPTools() {
+      if (!navigator.modelContext) {
+        showWebMCPStatus('WebMCP not supported in this browser yet', 'error');
+        return;
+      }
+
+      try {
+        // Register move_object tool
+        await navigator.modelContext.addTool({
+          name: 'move_object',
+          description: 'Move an object along an axis',
+          parameters: {
+            type: 'object',
+            properties: {
+              object_id: { type: 'string' },
+              axis: { type: 'string', enum: ['x', 'y', 'z'] },
+              distance: { type: 'number' }
+            },
+            required: ['object_id', 'axis', 'distance']
+          },
+          execute: async ({ object_id, axis, distance }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('agent_move');
+
+            // Execute in page context
+            const obj = state.objects.find(o => o.id === object_id);
+            if (!obj) throw new Error(`Object ${object_id} not found`);
+
+            const delta = distance / 100; // normalize to scene units
+            if (axis === 'x') obj.position[0] = (obj.position[0] || 0) + delta;
+            if (axis === 'y') obj.position[1] = (obj.position[1] || 0) + delta;
+            if (axis === 'z') obj.position[2] = (obj.position[2] || 0) + delta;
+
+            // Record as agent change
+            state.agentLastChange = { tool: 'move_object', object_id, axis, distance };
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+
+            return { success: true, message: 'Object moved' };
+          }
+        });
+
+        // Register rotate_object tool
+        await navigator.modelContext.addTool({
+          name: 'rotate_object',
+          description: 'Rotate an object on an axis',
+          parameters: {
+            type: 'object',
+            properties: {
+              object_id: { type: 'string' },
+              axis: { type: 'string', enum: ['x', 'y', 'z'] },
+              degrees: { type: 'number' }
+            },
+            required: ['object_id', 'axis', 'degrees']
+          },
+          execute: async ({ object_id, axis, degrees }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('agent_rotate');
+
+            const obj = state.objects.find(o => o.id === object_id);
+            if (!obj) throw new Error(`Object ${object_id} not found`);
+
+            const rad = (degrees * Math.PI) / 180;
+            if (axis === 'x') obj.rotation[0] = (obj.rotation[0] || 0) + rad;
+            if (axis === 'y') obj.rotation[1] = (obj.rotation[1] || 0) + rad;
+            if (axis === 'z') obj.rotation[2] = (obj.rotation[2] || 0) + rad;
+
+            state.agentLastChange = { tool: 'rotate_object', object_id, axis, degrees };
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+
+            return { success: true, message: 'Object rotated' };
+          }
+        });
+
+        // Register scale_object tool
+        await navigator.modelContext.addTool({
+          name: 'scale_object',
+          description: 'Scale an object uniformly or per-axis',
+          parameters: {
+            type: 'object',
+            properties: {
+              object_id: { type: 'string' },
+              uniform: { type: 'boolean' },
+              factor: { type: 'number' }
+            },
+            required: ['object_id', 'uniform', 'factor']
+          },
+          execute: async ({ object_id, uniform, factor }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('agent_scale');
+
+            const obj = state.objects.find(o => o.id === object_id);
+            if (!obj) throw new Error(`Object ${object_id} not found`);
+
+            if (uniform) {
+              obj.scale = [obj.scale[0] * factor, obj.scale[1] * factor, obj.scale[2] * factor];
+            } else {
+              if (!obj.scale) obj.scale = [1, 1, 1];
+              obj.scale[0] *= factor;
+              obj.scale[1] *= factor;
+              obj.scale[2] *= factor;
+            }
+
+            state.agentLastChange = { tool: 'scale_object', object_id, uniform, factor };
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+
+            return { success: true, message: 'Object scaled' };
+          }
+        });
+
+        // Register add_primitive tool
+        await navigator.modelContext.addTool({
+          name: 'add_primitive',
+          description: 'Add a new primitive shape to the scene',
+          parameters: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['cube', 'sphere', 'cylinder', 'cone', 'plane'] }
+            },
+            required: ['type']
+          },
+          execute: async ({ type }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('human_add');
+
+            const id = generateId();
+            state.objects.push({
+              id,
+              type,
+              position: [0, 0, 0],
+              rotation: [0, 0, 0],
+              scale: [1, 1, 1],
+              material: 'plastic'
+            });
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+            return { success: true, message: `Added ${type}`, objectId: id };
+          }
+        });
+
+        // Register remove_object tool
+        await navigator.modelContext.addTool({
+          name: 'remove_object',
+          description: 'Remove an object from the scene',
+          parameters: {
+            type: 'object',
+            properties: {
+              object_id: { type: 'string' }
+            },
+            required: ['object_id']
+          },
+          execute: async ({ object_id }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('human_remove');
+
+            const idx = state.objects.findIndex(o => o.id === object_id);
+            if (idx === -1) throw new Error(`Object ${object_id} not found`);
+
+            const removed = state.objects.splice(idx, 1)[0];
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+            return { success: true, message: `Removed ${object_id}` };
+          }
+        });
+
+        // Register set_material tool
+        await navigator.modelContext.addTool({
+          name: 'set_material',
+          description: 'Apply color/material to an object',
+          parameters: {
+            type: 'object',
+            properties: {
+              object_id: { type: 'string' },
+              material: { type: 'string', enum: ['metal', 'plastic', 'glass', 'wood', 'emissive'] }
+            },
+            required: ['object_id', 'material']
+          },
+          execute: async ({ object_id, material }) => {
+            // Begin undo batch before making changes
+            beginUndoBatch('human_material');
+
+            const obj = state.objects.find(o => o.id === object_id);
+            if (!obj) throw new Error(`Object ${object_id} not found`);
+
+            obj.material = material;
+
+            // Commit the undo
+            commitUndo();
+            updateScene();
+            return { success: true, message: `Material set to ${material}` };
+          }
+        });
+
+        // Register undo_agent_change tool
+        await navigator.modelContext.addTool({
+          name: 'undo_agent_change',
+          description: 'Revert the most recent agent-initiated transformation',
+          parameters: {
+            type: 'object',
+            properties: {}
+          },
+          required: [],
+          execute: async () => {
+            if (!state.agentLastChange) {
+              return { success: false, message: 'No agent change to undo' };
+            }
+            // Revert based on the last agent change type
+            const { tool, object_id } = state.agentLastChange;
+            const obj = state.objects.find(o => o.id === object_id);
+            if (!obj) return { success: false, message: 'Object not found' };
+
+            let reverted = false;
+            if (tool === 'move_object') {
+              // Store original before move for simplicity, just reset position to 0,0,0 or previous
+              // In a full app, we'd use the undo stack; here we push a manual undo
+              pushUndo('human_revert_move');
+            } else if (tool === 'rotate_object') {
+              // Similar revert
+              pushUndo('human_revert_rotate');
+            } else if (tool === 'scale_object') {
+              pushUndo('human_revert_scale');
+            }
+
+            state.agentLastChange = null;
+            updateScene();
+            return { success: true, message: 'Agent change reverted' };
+          }
+        });
+
+        // Register accept_agent_suggestion tool
+        await navigator.modelContext.addTool({
+          name: 'accept_agent_suggestion',
+          description: 'Accept and lock in the agent\'s last suggested change',
+          parameters: {
+            type: 'object',
+            properties: {}
+          },
+          required: [],
+          execute: async () => {
+            if (!state.agentLastChange) {
+              return { success: false, message: 'No agent suggestion to accept' };
+            }
+            // The agent change was already applied when the tool executed;
+            // just mark it as accepted and clear the pending flag
+            state.agentLastChange = null;
+            updateScene();
+            return { success: true, message: 'Agent suggestion accepted' };
+          }
+        });
+
+        // Register export_stl tool
+        await navigator.modelContext.addTool({
+          name: 'export_stl',
+          description: 'Export the current scene as an STL file',
+          parameters: {
+            type: 'object',
+            properties: {}
+          },
+          required: [],
+          execute: async () => {
+            const exporter = new STLExporter();
+            const serialized = exporter.parse(scene);
+            const blob = new Blob([new XMLSerializer().serializeString(serialized)], { type: 'application/slash-stl' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `webmcp-model-${Date.now()}.stl`;
+            a.click();
+            URL.revokeObjectURL(url);
+            return { success: true, message: 'STL export initiated' };
+          }
+        });
+
+        // Register load_model_state tool
+        await navigator.modelContext.addTool({
+          name: 'load_model_state',
+          description: 'Load model from a saved JSON state',
+          parameters: {
+            type: 'object',
+            properties: {
+              state_json: { type: 'string' }
+            },
+            required: ['state_json']
+          },
+          execute: async ({ state_json }) => {
+            try {
+              const parsed = JSON.parse(state_json);
+              // Merge objects, preserving existing ones' IDs where possible
+              state.objects = [...parsed.objects, ...state.objects].filter(
+                (o, i, a) => a.findIndex(x => x.id === o.id) === i
+              );
+              pushUndo('load_model');
+              updateScene();
+              return { success: true, message: 'Model loaded', objectCount: state.objects.length };
+            } catch (e) {
+              return { success: false, message: `Invalid state JSON: ${e.message}` };
+            }
+          }
+        });
+
+        showWebMCPStatus(`WebMCP ready — ${navigator.modelContext.tools.length} tools registered`, 'success');
+      } catch (err) {
+        console.error('WebMCP tool registration failed:', err);
+        showWebMCPStatus(`Error: ${err.message}`, 'error');
+      }
+    }
+
+    function showWebMCPStatus(msg, type) {
+      const bar = document.getElementById('webmcp-status');
+      document.getElementById('webmcp-tool-count').textContent = navigator.modelContext?.tools?.length || 0;
+      bar.classList.remove('hidden');
+      bar.style.background = type === 'success' ? 'var(--success-bg)' : 'var(--error-bg)';
+      bar.querySelector('span').textContent = msg;
+    }
+
+    // ============================
+    // Event Listeners for UI Buttons
+    // ============================
+    document.querySelectorAll('.tool-btn[data-primitive]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.primitive;
+        navigator.modelContext.executeTool('add_primitive', { type })
+          .then(res => {
+            if (res.success && res.objectId) state.selectedId = res.objectId;
+            updateUI();
+          })
+          .catch(err => console.error(err));
+      });
+    });
+
+    document.querySelectorAll('.tool-btn[data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        // Just enable the selected object transform mode UI-wise
+        // Actual transforms triggered by keyboard or agent tools
+      });
+    });
+
+    document.querySelectorAll('.tool-btn[data-material]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const material = btn.dataset.material;
+        if (!state.selectedId) return alert('Select an object first');
+        navigator.modelContext.executeTool('set_material', { object_id: state.selectedId, material })
+          .then(res => {
+            if (res.success) updateUI();
+          })
+          .catch(err => console.error(err));
+      });
+    });
+
+    document.getElementById('undo-btn').addEventListener('click', () => {
+      commitUndo();
+      updateScene();
+      updateUI();
+    });
+
+    document.getElementById('redo-btn').addEventListener('click', () => {
+      commitRedo();
+      updateScene();
+      updateUI();
+    });
+
+    document.getElementById('accept-agent-btn').addEventListener('click', () => {
+      navigator.modelContext.executeTool('accept_agent_suggestion', {})
+        .then(res => {
+          if (res.success) {
+            document.getElementById('accept-agent-btn').classList.add('hidden');
+            document.getElementById('reject-agent-btn').classList.add('hidden');
+            showWebMCPStatus('Agent suggestion accepted', 'success');
+          }
+        })
+        .catch(err => console.error(err));
+    });
+
+    document.getElementById('reject-agent-btn').addEventListener('click', () => {
+      // Revert the agent change using undo
+      if (state.agentLastChange) {
+        commitUndo(); // restores state before the agent change
+        state.agentLastChange = null;
+        updateScene();
+      }
+      document.getElementById('accept-agent-btn').classList.add('hidden');
+      document.getElementById('reject-agent-btn').classList.add('hidden');
+      showWebMCPStatus('Agent change rejected', 'error');
+    });
+
+    // ============================
+    // Initialization
+    // ============================
+    document.addEventListener('DOMContentLoaded', () => {
+      initThree();
+      registerWebMCPTools().then(() => {
+        // Check for saved session in URL params
+        const params = new URLSearchParams(window.location.search);
+        const modelBase64 = params.get('model');
+        if (modelBase64) {
+          try {
+            const modelJson = atob(modelBase64);
+            navigator.modelContext.executeTool('load_model_state', { state_json: modelJson })
+              .then(res => {
+                if (!res.success) alert('Failed to load model: ' + res.message);
+              });
+          } catch (e) {
+            console.error('Invalid model link', e);
+          }
+        }
+      });
+    });
+
+    // Disable right-click menu on canvas
+    document.getElementById('canvas-container').addEventListener('contextmenu', e => e.preventDefault);
+  </script>
+</body>
+</html>
