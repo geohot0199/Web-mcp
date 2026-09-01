@@ -1,179 +1,160 @@
-# WebMCP 3D Modeling Agentic Collaboration
+# Orbit — WebMCP Co-design Studio
 
-A browser-native 3D modeling platform where humans and AI agents collaborate to build and refine models together. Built for the OpenAI WebMCP Challenge 2026.
+> **A 3D workspace where humans and AI agents co-design in real time.**
 
-## 🌟 Features (25+)
+Orbit turns a browser-based 3D editor into a shared human–agent workflow. Instead of giving an agent a collection of blind UI clicks, the app gives it scene awareness, goal-level tools, visible proposals, deterministic reviews, and a clear approval boundary.
 
-### Core 3D Interaction (7)
-- **Orbit Camera** — Mouse drag rotates camera around the scene
-- **Pan Camera** — Middle-drag or WASD for plane movement
-- **Scroll Zoom** — Mouse wheel zoom
-- **WASD Camera Move** — Keyboard-controlled camera translation
-- **Reset View** — Snap to isometric default
-- **Angle Presets** — Front/Back/Left/Right/Top/Bottom/Isometric views
-- **Grid Snap** — Snap objects to 1-unit grid
+![No build step required](https://img.shields.io/badge/runtime-static%20browser%20app-121a31?style=flat-square)
+![WebMCP tools](https://img.shields.io/badge/WebMCP-21%20goal--oriented%20tools-8876ff?style=flat-square)
+![Human control](https://img.shields.io/badge/human%20control-approval%20first-52dfc3?style=flat-square)
 
-### Object Management (8)
-- **Add Primitive** — Cube, sphere, cylinder, cone, plane
-- **Remove Selected** — Delete current object
-- **Move Along Axis** — Nudge on X, Y, Z axes (arrow keys / WebMCP tools)
-- **Rotate On Axis** — Rotate 15° on X, Y, Z axes (R keys / WebMCP tools)
-- **Scale Uniform/Non-Uniform** — Grow/shrink proportionally or per-axis
-- **Undo / Redo** — Full history stack (capped at 50 steps), human/agent labeled
-- **Redo After Reject** — Restore agent-suggested changes after human refinement
-- **Duplicate Object** — Clone selected object (add another primitive)
+## Collaboration loop
 
-### Material & Appearance (5)
-- **Material Library** — Metal, plastic, glass, wood, emissive
-- **Color Assignment** — RGB color per object
-- **Emissive Intensity** — Self-lighting strength
-- **Opacity / Transparency** — Alpha-adjusted glass effects
-- **Texture Support** — Drag-and-drop texture application
-
-### Collaboration & Session (5)
-- **Undo Agent Change** — One-click revert of last agent transformation
-- **Accept Agent Suggestion** — Confirm and lock in agent's last change
-- **Accept/Reject Workflow** — Visual feedback for agent suggestions
-- **Share Session Link** — Generate shareable URL encoding current model state
-- **Change History Timeline** — Chronological list of all moves (human/agent labeled), clickable to snap view
-
-### Export & Integration (3)
-- **Export STL** — Binary STL for 3D printing
-- **Export JSON State** — Download full model state for backup or external tooling
-- **Load Model State** — Import saved model from shared link or JSON
-
-### Agent-Ready WebMCP Tools (10, registered via `navigator.modelContext`)
-| Tool | Description | Key Parameters |
-|------|-------------|----------------|
-| `move_object` | Move an object along an axis | `object_id`, `axis` (x/y/z), `distance` |
-| `rotate_object` | Rotate an object on an axis | `object_id`, `axis` (x/y/z), `degrees` |
-| `scale_object` | Scale uniformly or per-axis | `object_id`, `uniform` (bool), `factor` |
-| `add_primitive` | Add a new primitive shape | `type` (cube/sphere/cylinder/cone/plane) |
-| `remove_object` | Remove an object from the scene | `object_id` |
-| `set_material` | Apply color/material to object | `object_id`, `material` (name/RGB) |
-| `undo_agent_change` | Revert most recent agent-initiated transformation | — |
-| `accept_agent_suggestion` | Accept and lock agent's last suggested change | — |
-| `export_stl` | Export current scene as STL file | — |
-| `load_model_state` | Load model from saved JSON state | `state_json` |
-
-## 🏗️ Architecture
-
-The application follows a **client-side agent-ready architecture** where the website itself exposes callable tools via the W3C `navigator.modelContext` API. No backend server is required for core functionality — all 3D modeling, state management, and collaboration happens entirely in the browser.
-
-**Three Layers:**
-1. **Presentation** — HTML5, CSS3, Three.js (WebGPU-ready) for rendering and UI
-2. **Agent Layer** — `navigator.modelContext` API for tool registration and agent calls
-3. **State Layer** — JavaScript state + localStorage for model geometry, camera, undo history
-
-**Key Design Principles:**
-- Browser-only (offline-first, zero backend required)
-- Tool-first API: every interaction is a structured tool with JSON schema
-- Human-in-the-loop: every agent-initiated change requires acceptance or can be undone
-- State serialization: JSON model state persistable to localStorage or shareable via URL
-
-## 📊 Data Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    navigator.modelContext                          │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌────────────┐ │
-│  │  Registered Tools   │  │   Agent Calls      │  │  Browser   │ │
-│  │  (move, rotate,    │  │  executeTool()     │  │          │ │
-│   │   scale, etc.)    │  │  with JSON params  │  │          │ │
-│  └─────────────────────┘  └─────────────────────┘  └────────────┘ │
-│           ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  ▲  │
-│           │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │ │
-│    Human  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
-│  Inputs   │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
-│  (click,  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
-│   drag)   │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │
-└───────────┘  └────┘  └────┘  └────┘  └────┘  └─────────────────────┘
-         \                                              /
-          \                                            /
-           \                                          /
-            ✂  Human‑Agent Shared State (canvas + undo)  ✂
-                                                 │
-                                                 ▼
-                                          ┌─────────────────┐
-                                          │   Three.js      │
-                                          │   Renderer      │
-                                          │   Scene, Camera │
-                                          │   Objects       │
-                                          └─────────────────┘
-                                                 │
-                            ┌────────────────────┼─────────────────────┐
-                            │                    │                     │
-                            ▼                    ▼                     ▼
-                UI Controls (orbit, pan, zoom)    Agent Tool Panel   Human Accept/Refine
-                            │                    │                     │
-                            └────────────────────┘                     └───────────────┘
+```text
+Human intent → agent reads scene → visible plan → human approval
+     ↑                                              ↓
+Human feedback ← review + diagnostics ← apply → verify
 ```
 
-**Data Flow Sequence:**
-1. **App Initializes** → Three.js scene setup, model state loaded from localStorage, WebMCP tools registered
-2. **Human Action** → UI controls update local state → Three.js re-renders → undo snapshot pushed
-3. **Agent Suggestion** → Agent calls `executeTool('move_object', params)` → tool executes in page JS → UI updates (glowing border) → undo snapshot tagged "agent"
-4. **Human Accept/Refine** → Human clicks "Accept" or adjusts via UI → agent observes and suggests further tweaks → loop continues
-5. **Session Save/Load** → State JSON → localStorage → shareable link (`?model=base64`)
-6. **Export** → Human/agent clicks "Export STL/OBJ" → state converted to mesh data → downloadable
+The studio has two modes:
 
-## ⚡ Time & Space Complexity
+- **Planning mode (default):** agent changes are staged as a visible diff. The human can approve, modify, or reject before any scene mutation happens.
+- **Direct mode:** useful for quick iteration; plans apply immediately as one reversible agent batch, then the human can keep or undo the run.
 
-| Operation | Time Complexity | Space Complexity |
-|-----------|----------------|-----------------|
-| Register N tools | O(N) (once on init) | O(N) (tool schemas) |
-| Single object op (move/rotate/scale) | O(1) — direct property update | O(1) per op |
-| Render scene (N objects) | O(N) — GPU culling | O(N) — scene graph |
-| Undo/Redo (snapshot) | O(1) — push/pop array | O(K·N) — K snapshots, capped at 50 |
-| Save/Load state | O(M) — M = serialized JSON size | O(M) — localStorage |
-| Agent tool dispatch | O(1) — schema validation + exec | O(1) — transient |
+## What is implemented
 
-## 🚀 Getting Started
+### A redesigned, animated studio
 
-1. **Serve the app:** `python3 -m http.server 8081 --directory /path/to/Web-mcp`
-2. **Open:** `http://localhost:8081`
-3. **Start building** — use the right-panel tools to add primitives, manipulate objects, and apply materials
-4. **Collaborate with an agent** — WebMCP tools enable agent-driven changes with human acceptance
-5. **Share your model** — use "Share Link" to generate a URL that encodes the current state
+- Purpose-built dark 3D workspace using a focused three-accent visual system: **violet**, **mint**, and **peach**.
+- Motion design throughout: animated orbital brand mark, ambient color fields, pulsing agent state, live canvas HUD, proposal transitions, and responsive hover feedback.
+- Interactive Three.js canvas with orbit/zoom, object picking, selection bounds, grid, scene focus, reset view, and keyboard nudging.
+- Responsive desktop/tablet/mobile layouts with the canvas kept central to the workflow.
 
-## 🛠️ Technology Stack
+### Human + agent collaboration
 
-- **3D Rendering:** Three.js (WebGL/WebGPU-ready) via CDN
-- **UI:** HTML5, CSS3, Inter font
-- **Agent Protocol:** W3C `navigator.modelContext` (WebMCP standard)
-- **Persistence:** localStorage for model state
-- **Export:** Three.js STLExporter
-- **Controls:** Three.js OrbitControls, keyboard event handling
+- Natural-language **local design director** that creates plans for delivery drones, rockets, robots, primitive additions, selected-object edits, symmetry, and scene reset requests.
+- Selection-aware requests such as “make this metallic,” “move that left,” “make it bigger,” or “duplicate it.”
+- Live agent status: ready, thinking, waiting for approval, applying, or blocked by a permission.
+- A readable proposal card with planned steps, a visual diff (`+ forms`, `~ refinements`, `− removals`), reasons, and **Approve / Modify / Reject** controls.
+- Every approved run is one auditable and reversible transaction. Humans can **Keep changes** or **Undo agent run**.
+- An activity timeline records human and agent actions with timestamp and reason.
+- Agent permissions for scene reading, creation, modification, deletion, and export. Destructive/export actions are staged and permission-gated.
 
-## 📦 Submission Materials
+### Scene intelligence
 
-- ✅ Working live web app (this repository)
-- ✅ Code repository (Git branch: `arena/01a05be2-web-mcp`)
-- ✅ Project description (this README + design.md)
-- ✅ Demo video (to be recorded — screen recording of the app in use)
-- ✅ Additional materials per official rules
+- Scene state and selected-object inspection.
+- Semantic search for names, types, materials, tags, and common aliases (for example, wheel/propulsion and window/glass).
+- Structured object metadata: stable ID, readable name, type, transforms, material, color, and semantic tags.
+- Deterministic scene statistics and world-space bounding boxes.
+- Constraint system with **symmetry** and **on-ground** guardrails.
+- Deterministic validation for constraints, potential structural intersections, symmetry, material variety, composition, and scene statistics.
+- Transparent, project-specific design review scores. The UI explicitly treats the score as a heuristic—not an objective benchmark.
+- Review-informed suggestions only stage safe automatic changes (for example, missing mirrored counterparts).
 
-## 🆒 Development
+### Shared workspace controls
 
-- **Add new WebMCP tools:** Register via `navigator.modelContext.addTool({name, description, parameters, execute})`
-- **Extend undo/redo:** Modify `beginUndoBatch`, `commitUndo`, `commitRedo` functions
-- **New primitives:** Add geometry types to `getGeometry()` and UI buttons
-- **Style changes:** Edit `css/style.css`
+- Add cubes, spheres, cylinders, cones, tori, and planes by hand.
+- Edit object name, position, scale, finish, and color in the object inspector.
+- Duplicate, delete, snap to grid, and restore an isometric camera.
+- Attach contextual annotations to an object.
+- Save up to 12 visual version checkpoints and restore a prior version with confirmation.
+- Full shared-state undo/redo (`Ctrl/Cmd + Z`, `Ctrl/Cmd + Shift + Z`).
+- Local STL export from the currently visible model.
+- URL-safe `share_scene` state links that do not upload model data to a server.
 
-## 🔒 Security & Vulnerability Considerations
+## WebMCP tool strategy
 
-- **No external network calls** during normal operation (offline-first)
-- **localStorage** data is user-controlled; only parsed as trusted internal JSON
-- **Tool schemas** validated before execution — malformed params rejected and logged
-- **undo stack** capped at 50 entries to prevent memory exhaustion
-- **No `eval()`** or dynamic code execution anywhere in the codebase
-- **Export functions** produce static binary/JSON — no code injection possible
-- **CSP-friendly:** All scripts are from trusted CDN or inline, no unsafe-eval needed
-- **DOM events** use standard Three.js event model; no unexpected side effects
+Orbit intentionally exposes **goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
 
-## 📬 Contact & Submission
+| Layer | Tool | Purpose |
+|---|---|---|
+| Read | `get_scene` | Complete structured scene, context, constraints, stats, and bounds |
+| Read | `get_selected_object` | Resolve human references such as “this” and “that” |
+| Read | `find_objects` | Semantic object search |
+| Read | `get_scene_statistics` | Concise counts, bounds, symmetry, colors, versions |
+| Read | `get_design_context` | Intent, style, constraints, and annotations |
+| Read | `get_history` | Auditable operations without exposing internal snapshots |
+| Plan | `propose_changes` | Stage a visible, non-mutating plan from high-level changes |
+| Plan | `create_composite_object` | Plan a named multipart object from primitive components |
+| Plan | `modify_object` | Stage one structured object refinement |
+| Approval | `apply_approved_proposal` | Reports whether the human has approved; never bypasses UI consent |
+| Verify | `validate_scene` | Deterministic geometry, symmetry, and constraint diagnostics |
+| Verify | `analyze_design` | Transparent heuristic review and recommendations |
+| Constraints | `add_constraint` | Stage symmetry or ground guardrails |
+| Constraints | `list_constraints` | Read guardrails and their latest validation result |
+| Versions | `create_version` | Create a named checkpoint |
+| Versions | `list_versions` | Read checkpoint metadata |
+| Versions | `restore_version` | Stage a human-approved version restoration |
+| Control | `undo_agent_changes` | Revert the latest reversible agent batch |
+| Collaboration | `add_comment` | Attach a contextual annotation to a form |
+| Sensitive action | `export_stl` | Stage a permission-gated STL export request |
+| Sharing | `share_scene` | Generate a local URL-encoded state link |
 
-Built for the [OpenAI WebMCP Challenge 2026](https://openai.com/webmcp-challenge/?utm_source=chatgpt.com). 
-Submission includes: working live app, code repo, project description, and demo video.
+When the browser supports `navigator.modelContext`, Orbit registers these tools with the native WebMCP bridge. In non-WebMCP browsers, the normal human UI still works and a small local bridge is available for development:
 
-_Created as part of the WebMCP hackathon challenge — making websites agent-ready through the W3C WebMCP standard._
+```js
+window.webMCPStudio.listTools();
+await window.webMCPStudio.callTool('get_scene');
+```
+
+## Example agent workflow
+
+1. Human: **“Design a compact futuristic delivery drone.”**
+2. Agent calls `get_scene` and `get_design_context`.
+3. Agent calls `create_composite_object` or `propose_changes`.
+4. Orbit displays exact components, why they are being added, and a diff.
+5. Human says **“Make the body compact and don’t add a camera.”**
+6. Orbit revises the pending plan without mutating the scene.
+7. Human approves. The plan applies as one undoable batch.
+8. Human asks **“Review this scene.”**
+9. Agent calls `analyze_design` and `validate_scene`, explains the findings, and stages only safe improvements.
+
+## Run locally
+
+This is a static browser app; no package install or backend is needed.
+
+```bash
+cd Web-mcp
+python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+Then open `http://localhost:8080`.
+
+> Three.js, OrbitControls, and STLExporter are loaded as ES modules from jsDelivr. Use an internet-connected browser for the CDN modules, or vendor them locally for an offline deployment.
+
+## Architecture
+
+```text
+┌────────────────────── Browser UI ───────────────────────┐
+│ Canvas · Inspector · Planner · Approval · Review · Timeline│
+└───────────────────────────┬──────────────────────────────┘
+                            │ shared in-memory scene state
+       ┌────────────────────┼────────────────────┐
+       ▼                    ▼                    ▼
+   Three.js renderer   History/versions    WebMCP tool registry
+                                              │
+                                   navigator.modelContext (when available)
+```
+
+- **Presentation:** semantic HTML, responsive CSS, CSS motion graphics, Three.js.
+- **State:** plain browser-side JavaScript for objects, constraints, comments, intent, history, versions, proposals, and permissions.
+- **Agent layer:** structured JSON schemas and async WebMCP tool handlers.
+- **Safety layer:** read/write separation, proposal staging, human approval, permission checks, exact activity logging, version checkpoints, and undo.
+
+## Security and privacy notes
+
+- The app has no backend and performs no model-data upload.
+- Share links encode state in the URL fragment; they can be opened locally but should still be treated as data the recipient can inspect.
+- Export and destructive actions are visibly staged for human approval and additionally respect permission toggles.
+- Tool calls do not execute arbitrary strings, use `eval`, or accept executable code.
+- The local browser state is persisted only as convenience storage; the app does not load it automatically over a shared link without parsing the supplied state safely.
+- The activity timeline and review score are local project features, not claims of external AI evaluation or safety certification.
+
+## Technology
+
+- Three.js `r164`
+- Vanilla ES modules
+- HTML/CSS with no build dependency
+- WebMCP via `navigator.modelContext` when available
+
+Built for a human-first WebMCP experience: **observe → plan → approve → act → verify**.
