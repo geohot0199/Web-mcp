@@ -398,6 +398,28 @@
     }
   },
   {
+    "id": "list-surface-options-alt",
+    "prompt": "List surface options",
+    "context": {},
+    "expected": {
+      "tool": "list_surface_options",
+      "parameters": {},
+      "approval": false
+    }
+  },
+  {
+    "id": "inspect-no-selection",
+    "prompt": "Inspect this object",
+    "context": {},
+    "expected": {
+      "tool": "inspect_object",
+      "parameters": {
+        "object_id": "$selected"
+      },
+      "approval": false
+    }
+  },
+  {
     "id": "refine-texture-brushed",
     "prompt": "Give this a brushed metal texture",
     "context": {

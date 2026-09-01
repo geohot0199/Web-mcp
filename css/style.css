@@ -236,6 +236,12 @@ h1, h2, h3, p { margin: 0; }
 .canvas-label-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 8px var(--mint); }
 .camera-readout { color: var(--text-muted); font-family: var(--mono); font-size: 8px; letter-spacing: .08em; }
 .camera-readout span:last-child { margin-left: 4px; color: var(--text-soft); }
+.canvas-hud-right { display: flex; align-items: center; gap: 12px; }
+.canvas-view-controls { display: flex; gap: 5px; }
+/* Frosted controls floating on the near-black viewport; the active button marks the current view. */
+.hud-icon-button { width: 26px; height: 26px; border-color: rgba(255, 255, 255, .22); border-radius: 7px; background: rgba(24, 24, 24, .55); color: var(--viewport-text); font-size: 12px; backdrop-filter: blur(8px); }
+.hud-icon-button:hover { border-color: rgba(255, 255, 255, .5); background: rgba(40, 40, 40, .72); color: #ffffff; }
+.hud-icon-button.active { border-color: rgba(255, 255, 255, .85); background: rgba(242, 242, 242, .92); color: #0d0d0d; }
 .canvas-bottom-hud { bottom: 14px; left: 15px; gap: 12px; color: rgba(33,33,33,0.57); font-family: var(--mono); font-size: 8px; }
 kbd { padding: 2px 4px; border: 1px solid rgba(0,0,0,0.14); border-radius: 3px; background: rgba(255,255,255,0.17); color: var(--text-soft); font-family: var(--mono); font-size: 8px; }
 .selection-hud { right: 15px; bottom: 13px; gap: 7px; padding: 7px 8px; border: 1px solid rgba(123,123,123,0.35); border-radius: 7px; background: rgba(237,237,237,0.72); color: var(--text-soft); font-size: 9px; backdrop-filter: blur(9px); animation: selectionAppear .25s ease; }
@@ -307,6 +313,14 @@ kbd { padding: 2px 4px; border: 1px solid rgba(0,0,0,0.14); border-radius: 3px; 
 .message-label { display: block; margin-bottom: 4px; color: var(--violet-bright); font-family: var(--mono); font-size: 8px; }
 .human-message .message-label { color: var(--mint); }
 .message-bubble p { color: var(--text-soft); font-size: 10px; line-height: 1.55; }
+/* Export file card: the artifact of an STL download, attached to the conversation. */
+.export-card { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 8px 9px; border: 1px dashed var(--line-strong); border-radius: 7px; background: var(--surface-raised); }
+.export-card-icon { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--ink); color: var(--text); font-size: 13px; }
+.export-card-meta { flex: 1 1 auto; min-width: 0; }
+.export-card-meta strong { display: block; overflow: hidden; color: var(--text); font-family: var(--mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.export-card-meta small { display: block; margin-top: 2px; color: var(--text-muted); font-family: var(--mono); font-size: 8px; }
+.export-card-link { flex: 0 0 auto; padding: 5px 8px; border: 1px solid var(--text); border-radius: 6px; background: var(--text); color: var(--ink); font-family: var(--mono); font-size: 8px; letter-spacing: .06em; text-decoration: none; text-transform: uppercase; }
+.export-card-link:hover { background: #000000; }
 .proposal-slot { padding: 8px 15px 7px; }
 .proposal-card { overflow: hidden; border: 1px solid rgba(123,123,123,0.35); border-radius: 12px; background: linear-gradient(145deg, rgba(123,123,123,0.14), rgba(250,250,250,0.92) 58%); box-shadow: 0 11px 25px rgba(0,0,0,0.088); animation: proposalIn .42s cubic-bezier(.2,.85,.25,1) both; }
 .proposal-card.applied { border-color: rgba(64,64,64,0.35); background: linear-gradient(145deg, rgba(64,64,64,0.12), rgba(227,227,227,0.92) 58%); }

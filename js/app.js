@@ -70,6 +70,9 @@ const els = {
   timeTravelCaption: $('#time-travel-caption'),
   exitTimeTravelButton: $('#exit-time-travel-btn'),
   exitTimeTravelCanvasButton: $('#exit-time-travel-canvas'),
+  canvasExpandBtn: $('#canvas-expand-btn'),
+  canvasCollapseBtn: $('#canvas-collapse-btn'),
+  downloadStlBtn: $('#download-stl-btn'),
   gestureHud: $('#gesture-hud'),
   gestureHudName: $('#gesture-hud-name'),
   preferenceChips: $('#preference-chips'),
@@ -178,6 +181,12 @@ function titleCase(value) {
   return String(value || '').replace(/[-_]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 function validColor(color) {
   return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color);
 }
@@ -204,12 +213,13 @@ function nextObjectName(type) {
 }
 
 function normaliseDesignContext(raw = {}) {
+  const source = raw || {};
   return {
-    intent: String(raw.intent || '').slice(0, 300),
-    style: String(raw.style || 'Exploratory').slice(0, 48),
-    updatedAt: raw.updatedAt || null,
-    preferences: Array.isArray(raw.preferences) ? [...new Set(raw.preferences.map((preference) => String(preference).trim().slice(0, 70)).filter(Boolean))].slice(0, 12) : [],
-    persona: String(raw.persona || 'Adaptive co-designer').slice(0, 48)
+    intent: String(source.intent || '').slice(0, 300),
+    style: String(source.style || 'Exploratory').slice(0, 48),
+    updatedAt: source.updatedAt || null,
+    preferences: Array.isArray(source.preferences) ? [...new Set(source.preferences.map((preference) => String(preference).trim().slice(0, 70)).filter(Boolean))].slice(0, 12) : [],
+    persona: String(source.persona || 'Adaptive co-designer').slice(0, 48)
   };
 }
 
@@ -354,7 +364,7 @@ function loadPersistedWorkspace() {
 
   outcome.versions = (Array.isArray(saved.versions) ? saved.versions : []).map(normaliseVersionRecord).filter(Boolean).slice(-12);
 
-  if (saved.scene && Array.isArray(saved.scene.objects) && saved.scene.objects.length) {
+  if (saved.scene && Array.isArray(saved.scene.objects)) {
     try {
       state.versions = outcome.versions;
       hydrateScene(saved.scene);
@@ -2544,7 +2554,15 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   hideBuildOverlay();
 
   // Side effects run only after the streamed model state is complete and remain proposal-gated.
-  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) exportSTL();
+  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) {
+    const file = exportSTL('agent');
+    if (file.success) {
+      addMessage('agent', `I exported the current shared scene — ${file.filename} is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
+      addFileCardMessage('agent', file);
+    } else {
+      addMessage('agent', `The export could not be completed: ${file.message}`);
+    }
+  }
   if (!interrupted && selectedActions.some((action) => action.kind === 'share')) await shareScene();
 
   renderProposal();
@@ -2723,6 +2741,59 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
     setAgentStatus('ready', 'Semantic search complete', `${matches.length} matching form${matches.length === 1 ? '' : 's'} found.`);
     if (matches[0]) selectObject(matches[0].id);
     addMessage('agent', matches.length ? `I found ${matches.length} match${matches.length === 1 ? '' : 'es'}: ${matches.map((object) => object.name).join(', ')}.${matches[0] ? ` I selected ${matches[0].name}.` : ''}` : `I could not find a form matching “${routedIntent.parameters.query}”.`);
+    return;
+  }
+  /*
+   * Codex-style read and refine routes. The router recognises these tools, so they must
+   * be answered here: letting them fall through to buildPlan() would turn a read request
+   * like “Inspect this object” or “What textures are available?” into a three-form
+   * starter concept instead of the requested read-only information.
+   */
+  if (routedIntent.tool === 'inspect_object') {
+    const requestedId = routedIntent.parameters.object_id === '$selected' || !routedIntent.parameters.object_id ? state.selectedId : routedIntent.parameters.object_id;
+    const inspection = inspectObjectRead(requestedId);
+    if (!inspection.success) {
+      setAgentStatus('ready', 'Inspection unavailable', inspection.message);
+      addMessage('agent', inspection.message);
+      return;
+    }
+    const { geometry, surface, annotations, nearest_objects, locked } = inspection;
+    const size = geometry.world_size.map((value) => value.toFixed(2)).join(' × ');
+    setAgentStatus('ready', 'Object inspected', `${geometry.type_label} · ${geometry.detail_label} · ≈${geometry.triangle_estimate} triangles`);
+    addMessage('agent', `${inspection.object.name} is a ${geometry.type_label.toLowerCase()} measuring ${size} units${geometry.resting_on_ground ? ', resting on the ground plane' : ''}. It uses ${geometry.detail_label.toLowerCase()} resolution (≈${geometry.triangle_estimate} triangles) with a ${surface.finish_label.toLowerCase()} finish${surface.texture_label !== 'None' ? ` under a ${surface.texture_label.toLowerCase()} texture` : ''} (roughness ${surface.roughness}, metalness ${surface.metalness}).`
+      + (annotations.length ? ` It carries ${annotations.length} annotation${annotations.length === 1 ? '' : 's'}: “${annotations.map((item) => item.text).join('”, “')}”.` : '')
+      + (nearest_objects.length ? ` Nearest forms: ${nearest_objects.slice(0, 3).map((item) => `${item.name} ${item.distance}u away`).join(', ')}.` : '')
+      + (locked ? ' It is locked while the agent is working on it.' : ' Tell me how to change its geometry or surface and I will stage the exact diff.'));
+    addActivity(`Inspected ${inspection.object.name}`, 'Deep object read served from live scene state.', 'agent');
+    return;
+  }
+  if (routedIntent.tool === 'list_surface_options') {
+    const options = listSurfaceOptionsRead();
+    if (!options.success) {
+      setAgentStatus('ready', 'Surface options unavailable', options.message);
+      addMessage('agent', options.message);
+      return;
+    }
+    const totalOptions = options.textures.length + options.finishes.length + options.detail_levels.length + options.primitives.length;
+    setAgentStatus('ready', 'Surface options listed', `${totalOptions} real options across textures, finishes, resolutions, and primitives.`);
+    addMessage('agent', `Here is everything the studio can actually render, so a refinement is planned against real options instead of guessed names. Textures: ${options.textures.map((item) => item.label).join(', ')}. Finishes: ${options.finishes.map((item) => item.label).join(', ')}. Mesh resolutions: ${options.detail_levels.map((item) => item.label).join(', ')}. Primitives: ${options.primitives.map((item) => item.label).join(', ')}. ${options.palette} Select a form and name any of these and I will stage the change.`);
+    addActivity('Listed surface options', 'Full texture, finish, resolution, and primitive option set served to the human.', 'agent');
+    return;
+  }
+  if (routedIntent.tool === 'edit_geometry' || routedIntent.tool === 'refine_texture') {
+    // A pending draft may be the target of this wording after all (“metal”, a colour,
+    // “compact”): revise it in place first, exactly as the pre-existing path did.
+    if (refinePendingProposal(request)) return;
+    const isGeometry = routedIntent.tool === 'edit_geometry';
+    const targetId = routedIntent.parameters.object_id === '$selected' || !routedIntent.parameters.object_id ? state.selectedId : routedIntent.parameters.object_id;
+    const result = isGeometry ? stageGeometryEdit(targetId, routedIntent.parameters) : stageTextureRefinement(targetId, routedIntent.parameters);
+    if (!result.success) {
+      setAgentStatus('ready', isGeometry ? 'Geometry edit blocked' : 'Surface refinement blocked', result.message);
+      addMessage('agent', result.message);
+      return;
+    }
+    addMessage('agent', `I staged “${result.proposal.title}” as a visible, reversible diff. Approve it and I will apply the change live in the viewport — or toggle off steps, revise the wording, or reject it first.`);
+    if (state.currentMode === 'direct') await executePendingProposal({ autoApproved: true });
     return;
   }
   if (routedIntent.tool === 'analyze_design') {
@@ -2937,6 +3008,102 @@ function describeGeometryEdit(args = {}) {
   }
 }
 
+/*
+ * Shared read and staging routes for the Codex-style inspect → edit → refine loop.
+ * The WebMCP tool handlers and the local intent router both dispatch into these same
+ * functions, so a request behaves identically no matter which surface it arrived on.
+ * Keeping the logic here (and not only inside registerTool) is what guarantees the
+ * router's read routes are answered as reads — never silently turned into a plan.
+ */
+function inspectObjectRead(objectId) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: objectId ? `Object ${objectId} was not found.` : 'No object is selected. Click a form (or ask me to find one) before I can do a deep read.' };
+  const bounds = objectBounds(object);
+  const neighbours = state.objects
+    .filter((candidate) => candidate.id !== object.id)
+    .map((candidate) => ({ id: candidate.id, name: candidate.name, distance: Number(Math.hypot(...candidate.position.map((value, axis) => value - object.position[axis])).toFixed(2)) }))
+    .sort((first, second) => first.distance - second.distance)
+    .slice(0, 4);
+  return {
+    success: true,
+    object: clone(object),
+    geometry: {
+      type: object.type,
+      type_label: TYPE_LABELS[object.type],
+      detail: object.detail,
+      detail_label: DETAIL_LEVELS[object.detail],
+      triangle_estimate: estimateTriangles(object),
+      world_bounds: bounds,
+      world_size: bounds.size.map((value) => Number(value.toFixed(3))),
+      resting_on_ground: Math.abs(bounds.min[1]) < .05
+    },
+    surface: materialSummary(object),
+    annotations: state.comments.filter((comment) => comment.objectId === object.id).map(({ text, author, createdAt }) => ({ text, author, created_at: createdAt })),
+    nearest_objects: neighbours,
+    locked: isObjectLocked(object.id)
+  };
+}
+
+function listSurfaceOptionsRead() {
+  return readAllowed() || ({
+    success: true,
+    textures: TEXTURE_NAMES.map((name) => ({ id: name, label: TEXTURES[name].label })),
+    finishes: Object.entries(MATERIALS).map(([id, preset]) => ({ id, label: preset.label, roughness: preset.roughness, metalness: preset.metalness })),
+    detail_levels: Object.entries(DETAIL_LEVELS).map(([id, label]) => ({ id, label })),
+    primitives: TYPES.map((type) => ({ id: type, label: TYPE_LABELS[type] })),
+    palette: 'Monochrome. Values run from #111111 to #fafafa.'
+  });
+}
+
+function stageGeometryEdit(objectId, args = {}) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: 'No target object. Select a form first, or name the object you want changed.' };
+  let patch;
+  try { patch = geometryPatch(object, args); }
+  catch (error) { return { success: false, message: error.message }; }
+  return stageExternalPlan({
+    title: `${describeGeometryEdit(args)} · ${object.name}`,
+    description: 'A single geometry change to the referenced object.',
+    why: args.why || 'Geometry changes stay visible and reversible while the human watches them apply.',
+    intent: `Edit geometry of ${object.name}`,
+    style: state.designContext.style,
+    actions: [{ kind: 'modify', objectId: object.id, patch, label: `${describeGeometryEdit(args)} ${object.name}` }]
+  });
+}
+
+function stageTextureRefinement(objectId, args = {}) {
+  const denied = readAllowed(); if (denied) return denied;
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) return { success: false, message: 'No target object. Select a form first, or name the object you want changed.' };
+  const patch = {};
+  if (args.texture !== undefined) {
+    if (!TEXTURES[args.texture]) return { success: false, message: `Unknown texture “${args.texture}”. Available: ${TEXTURE_NAMES.join(', ')}.` };
+    patch.texture = args.texture;
+  }
+  if (args.texture_scale !== undefined) patch.textureScale = args.texture_scale;
+  if (args.finish !== undefined) {
+    if (!MATERIALS[args.finish]) return { success: false, message: `Unknown finish “${args.finish}”. Available: ${Object.keys(MATERIALS).join(', ')}.` };
+    patch.material = args.finish;
+  }
+  if (args.roughness !== undefined) patch.roughness = args.roughness;
+  if (args.metalness !== undefined) patch.metalness = args.metalness;
+  if (args.color !== undefined) {
+    if (!validColor(args.color)) return { success: false, message: 'Color must be a hex value such as #d6d6d6.' };
+    patch.color = args.color;
+  }
+  if (!Object.keys(patch).length) return { success: false, message: 'Provide at least one surface property to refine.' };
+  return stageExternalPlan({
+    title: `Refine surface · ${object.name}`,
+    description: 'A surface and texture refinement on the referenced object.',
+    why: args.why || 'Texture refinements stay visible and reversible while the human watches them apply.',
+    intent: `Refine the surface of ${object.name}`,
+    style: state.designContext.style,
+    actions: [{ kind: 'modify', objectId: object.id, patch, label: `Refine surface of ${object.name}` }]
+  });
+}
+
 function externalChangeToAction(change = {}) {
   const operation = change.operation || change.kind;
   if (['create', 'add'].includes(operation)) return { kind: 'add', object: change.object || change.value || {} };
@@ -3094,35 +3261,7 @@ function defineTools() {
     name: 'inspect_object',
     description: 'Inspect one object in depth: geometry type, resolution, transform, world bounds, resolved surface treatment, triangle estimate, annotations and nearby objects. Call this before changing geometry or textures.',
     parameters: { type: 'object', properties: { object_id: { type: 'string', description: 'Object id. Defaults to the human’s current selection.' } }, required: [] },
-    execute: async ({ object_id } = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (object_id || state.selectedId));
-      if (!object) return { success: false, message: object_id ? `Object ${object_id} was not found.` : 'No object is selected. Pass object_id or ask the human to select a form.' };
-      const bounds = objectBounds(object);
-      const neighbours = state.objects
-        .filter((candidate) => candidate.id !== object.id)
-        .map((candidate) => ({ id: candidate.id, name: candidate.name, distance: Number(Math.hypot(...candidate.position.map((value, axis) => value - object.position[axis])).toFixed(2)) }))
-        .sort((first, second) => first.distance - second.distance)
-        .slice(0, 4);
-      return {
-        success: true,
-        object: clone(object),
-        geometry: {
-          type: object.type,
-          type_label: TYPE_LABELS[object.type],
-          detail: object.detail,
-          detail_label: DETAIL_LEVELS[object.detail],
-          triangle_estimate: estimateTriangles(object),
-          world_bounds: bounds,
-          world_size: bounds.size.map((value) => Number(value.toFixed(3))),
-          resting_on_ground: Math.abs(bounds.min[1]) < .05
-        },
-        surface: materialSummary(object),
-        annotations: state.comments.filter((comment) => comment.objectId === object.id).map(({ text, author, createdAt }) => ({ text, author, created_at: createdAt })),
-        nearest_objects: neighbours,
-        locked: isObjectLocked(object.id)
-      };
-    }
+    execute: async ({ object_id } = {}) => inspectObjectRead(object_id || state.selectedId)
   });
   registerTool({
     name: 'edit_geometry',
@@ -3142,22 +3281,7 @@ function defineTools() {
       },
       required: ['operation']
     },
-    execute: async (args = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
-      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
-      let patch;
-      try { patch = geometryPatch(object, args); }
-      catch (error) { return { success: false, message: error.message }; }
-      return stageExternalPlan({
-        title: `${describeGeometryEdit(args)} · ${object.name}`,
-        description: 'A single geometry change to the referenced object.',
-        why: args.why || 'Geometry changes stay visible and reversible while the human watches them apply.',
-        intent: `Edit geometry of ${object.name}`,
-        style: state.designContext.style,
-        actions: [{ kind: 'modify', objectId: object.id, patch, label: `${describeGeometryEdit(args)} ${object.name}` }]
-      });
-    }
+    execute: async (args = {}) => stageGeometryEdit(args.object_id || state.selectedId, args)
   });
   registerTool({
     name: 'refine_texture',
@@ -3176,49 +3300,13 @@ function defineTools() {
       },
       required: []
     },
-    execute: async (args = {}) => {
-      const denied = readAllowed(); if (denied) return denied;
-      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
-      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
-      const patch = {};
-      if (args.texture !== undefined) {
-        if (!TEXTURES[args.texture]) return { success: false, message: `Unknown texture “${args.texture}”. Available: ${TEXTURE_NAMES.join(', ')}.` };
-        patch.texture = args.texture;
-      }
-      if (args.texture_scale !== undefined) patch.textureScale = args.texture_scale;
-      if (args.finish !== undefined) {
-        if (!MATERIALS[args.finish]) return { success: false, message: `Unknown finish “${args.finish}”. Available: ${Object.keys(MATERIALS).join(', ')}.` };
-        patch.material = args.finish;
-      }
-      if (args.roughness !== undefined) patch.roughness = args.roughness;
-      if (args.metalness !== undefined) patch.metalness = args.metalness;
-      if (args.color !== undefined) {
-        if (!validColor(args.color)) return { success: false, message: 'Color must be a hex value such as #d6d6d6.' };
-        patch.color = args.color;
-      }
-      if (!Object.keys(patch).length) return { success: false, message: 'Provide at least one surface property to refine.' };
-      return stageExternalPlan({
-        title: `Refine surface · ${object.name}`,
-        description: 'A surface and texture refinement on the referenced object.',
-        why: args.why || 'Texture refinements stay visible and reversible while the human watches them apply.',
-        intent: `Refine the surface of ${object.name}`,
-        style: state.designContext.style,
-        actions: [{ kind: 'modify', objectId: object.id, patch, label: `Refine surface of ${object.name}` }]
-      });
-    }
+    execute: async (args = {}) => stageTextureRefinement(args.object_id || state.selectedId, args)
   });
   registerTool({
     name: 'list_surface_options',
     description: 'List every procedural texture, finish and geometry resolution the studio supports, so a refinement can be planned against real options instead of guessed names.',
     parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => readAllowed() || ({
-      success: true,
-      textures: TEXTURE_NAMES.map((name) => ({ id: name, label: TEXTURES[name].label })),
-      finishes: Object.entries(MATERIALS).map(([id, preset]) => ({ id, label: preset.label, roughness: preset.roughness, metalness: preset.metalness })),
-      detail_levels: Object.entries(DETAIL_LEVELS).map(([id, label]) => ({ id, label })),
-      primitives: TYPES.map((type) => ({ id: type, label: TYPE_LABELS[type] })),
-      palette: 'Monochrome. Values run from #111111 to #fafafa.'
-    })
+    execute: async () => listSurfaceOptionsRead()
   });
   registerTool({
     name: 'apply_approved_proposal',
@@ -3368,7 +3456,12 @@ function exposeLocalBridge() {
 }
 
 /* Export and shared state */
-function exportSTL() {
+/*
+ * Produce a local STL from the visible scene and start the browser download.
+ * The object URL is intentionally kept alive for the session so the same file can
+ * be re-downloaded from its chat card; the browser reclaims it on reload.
+ */
+function exportSTL(source = 'human') {
   if (!viewportReady) return { success: false, message: 'STL export needs the 3D viewport, which is unavailable in this browser.' };
   if (!state.objects.length) {
     setCanvasMessage('Add a form before exporting');
@@ -3378,22 +3471,49 @@ function exportSTL() {
     const exporter = new STLExporter();
     const data = exporter.parse(modelGroup, { binary: true });
     const blob = new Blob([data], { type: 'model/stl' });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `orbit-model-${stamp}.stl`;
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `orbit-model-${new Date().toISOString().slice(0, 10)}.stl`;
+    anchor.download = filename;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 250);
-    addActivity('STL export initiated', 'A local STL file was prepared from the current shared scene.', 'human');
+    addActivity('STL export initiated', `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} STL from ${state.objects.length} form${state.objects.length === 1 ? '' : 's'}.`, source);
     showToast('STL download prepared');
-    return { success: true, message: 'STL export initiated.' };
+    return { success: true, message: 'STL export initiated.', filename, size: blob.size, url, object_count: state.objects.length };
   } catch (error) {
     console.error('STL export failed:', error);
     showToast('STL export could not be created', 'error');
     return { success: false, message: error.message };
   }
+}
+
+/*
+ * Attach the exported file to the conversation as a downloadable card, so a download
+ * (human or agent-initiated) remains reachable from the chat after the moment passes.
+ */
+function addFileCardMessage(role, file) {
+  const message = node('article', `message ${role === 'human' ? 'human-message' : 'agent-message'}`);
+  if (role !== 'human') message.append(node('div', 'message-avatar', '✦'));
+  const bubble = node('div', 'message-bubble');
+  bubble.append(node('span', 'message-label', role === 'human' ? 'You' : 'Orbit Agent'));
+  const card = node('div', 'export-card');
+  card.append(node('span', 'export-card-icon', '▦'));
+  const meta = node('div', 'export-card-meta');
+  meta.append(
+    node('strong', '', file.filename),
+    node('small', '', `${file.object_count} form${file.object_count === 1 ? '' : 's'} · ${formatBytes(file.size)} · local STL · nothing was uploaded`)
+  );
+  const link = node('a', 'export-card-link', 'Download ⤓');
+  link.href = file.url;
+  link.download = file.filename;
+  card.append(meta, link);
+  bubble.append(card);
+  message.append(bubble);
+  els.conversation.append(message);
+  requestAnimationFrame(() => { els.conversation.parentElement.scrollTop = els.conversation.parentElement.scrollHeight; });
 }
 
 function encodePayload(value) {
@@ -3545,14 +3665,41 @@ function bindEvents() {
    * The viewport is the primary surface, so it can take the full width on demand.
    * Manual controls collapse away rather than competing with the model.
    */
+  /*
+   * Full-space viewing: the canvas buttons (⤢ expand / ⤡ restore), the existing
+   * Viewport focus control and the V key all drive the same state, so every entry
+   * point stays in sync.
+   */
   const focusViewportButton = $('#focus-viewport-btn');
   const setViewportFocus = (active) => {
     document.body.classList.toggle('viewport-focus', active);
     focusViewportButton.setAttribute('aria-pressed', String(active));
     focusViewportButton.classList.toggle('active', active);
-    setCanvasMessage(active ? 'Viewport focus on — manual panels hidden' : 'Manual panels restored');
+    els.canvasExpandBtn.setAttribute('aria-pressed', String(active));
+    els.canvasExpandBtn.classList.toggle('active', active);
+    els.canvasCollapseBtn.setAttribute('aria-pressed', String(!active));
+    els.canvasCollapseBtn.classList.toggle('active', !active);
+    setCanvasMessage(active ? 'Full 3D space — manual panels hidden (⤡ or V restores them)' : 'Manual panels restored');
   };
   focusViewportButton.addEventListener('click', () => setViewportFocus(!document.body.classList.contains('viewport-focus')));
+  els.canvasExpandBtn.addEventListener('click', () => setViewportFocus(true));
+  els.canvasCollapseBtn.addEventListener('click', () => setViewportFocus(false));
+
+  // Manual STL download: a human-initiated export straight from the canvas toolbar.
+  els.downloadStlBtn.addEventListener('click', () => {
+    if (state.timeTravel.active) {
+      setCanvasMessage('Return to the live scene before exporting');
+      showToast('Time-travel preview is read-only', 'error');
+      return;
+    }
+    const file = exportSTL('human');
+    if (file.success) {
+      addFileCardMessage('human', file);
+      setCanvasMessage('STL download started — a copy stays attached in the chat');
+    } else if (file.message !== 'Scene is empty.') {
+      setCanvasMessage(file.message);
+    }
+  });
 
   els.agentForm.addEventListener('submit', (event) => { event.preventDefault(); handleAgentRequest(els.agentInput.value); });
   els.voiceButton.addEventListener('click', toggleVoiceInput);
@@ -3678,7 +3825,9 @@ async function bootstrap() {
   publishSelectionContext();
   initialiseVoiceInput();
   const readyDetail = restored.restoredScene
-    ? `Restored your saved workspace: ${state.objects.length} object${state.objects.length === 1 ? '' : 's'} and ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'}.`
+    ? (state.objects.length
+      ? `Restored your saved workspace: ${state.objects.length} object${state.objects.length === 1 ? '' : 's'} and ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'}.`
+      : `Restored your saved workspace: the scene is empty, but your ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'} and project memory survived the reload.`)
     : restored.restoredMemory
       ? 'The human and agent now share the same scene state and remembered project preferences.'
       : 'The human and agent now share the same inspectable scene state.';

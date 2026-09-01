@@ -221,7 +221,13 @@
 
           <div class="canvas-top-hud">
             <div class="canvas-label"><span class="canvas-label-dot"></span> Live canvas</div>
-            <div class="camera-readout"><span>CAM</span> <span id="camera-readout">ISO 02</span></div>
+            <div class="canvas-hud-right">
+              <div class="canvas-view-controls" role="group" aria-label="Canvas size">
+                <button id="canvas-expand-btn" class="icon-button hud-icon-button" type="button" aria-pressed="false" title="Full 3D space — hide the manual panels (V)">⤢</button>
+                <button id="canvas-collapse-btn" class="icon-button hud-icon-button" type="button" aria-pressed="true" title="Restore the manual panels (V)">⤡</button>
+              </div>
+              <div class="camera-readout"><span>CAM</span> <span id="camera-readout">ISO 02</span></div>
+            </div>
           </div>
 
           <div id="empty-canvas" class="empty-canvas">
@@ -275,6 +281,7 @@
           <button id="fit-view-btn" class="toolbar-button" type="button">Fit scene</button>
           <button id="grid-snap-btn" class="toolbar-button" type="button">Snap selection</button>
           <button id="reset-view-btn" class="toolbar-button" type="button">Reset view</button>
+          <button id="download-stl-btn" class="toolbar-button" type="button">Download STL ⤓</button>
           <span id="canvas-message" class="canvas-message" aria-live="polite"></span>
         </div>
 
