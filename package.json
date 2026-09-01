@@ -1,0 +1,11 @@
+{
+  "name": "orbit-webmcp-co-design-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static human-agent 3D co-design workspace with goal-oriented WebMCP tools.",
+  "type": "module",
+  "scripts": {
+    "check": "node --check js/app.js && node --check js/agent-router.js && node scripts/run-agent-evals.mjs",
+    "evals": "node scripts/run-agent-evals.mjs"
+  }
+}

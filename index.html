@@ -200,8 +200,16 @@
             <span class="selection-hud-key">selected</span>
           </div>
 
+          <div id="agent-build-overlay" class="agent-build-overlay hidden" aria-live="polite">
+            <span class="eyebrow">Live agent build</span>
+            <strong id="agent-build-step">Preparing shared scene…</strong>
+            <div class="build-progress"><i id="agent-build-progress"></i></div>
+            <small id="agent-build-count">0 / 0 operations</small>
+          </div>
+
           <div class="canvas-bottom-hud">
             <span><kbd>drag</kbd> orbit</span>
+            <span><kbd>⇧ drag</kbd> move</span>
             <span><kbd>scroll</kbd> zoom</span>
             <span><kbd>click</kbd> select</span>
           </div>
@@ -242,6 +250,12 @@
             <strong id="agent-status-title">Ready to collaborate</strong>
             <p id="agent-status-copy">I can inspect, plan, build, and review with you.</p>
           </div>
+        </div>
+
+        <div id="selection-context" class="selection-context" title="This context updates whenever the human changes the selection.">
+          <span>Live selection relay</span>
+          <strong id="selection-context-value">No object selected</strong>
+          <small id="selection-context-revision">context v0</small>
         </div>
 
         <div class="agent-tabs" role="tablist" aria-label="Collaboration views">
@@ -298,13 +312,19 @@
       <button class="modal-close" type="button" data-close-modal="permissions-modal" aria-label="Close permissions">×</button>
       <span class="eyebrow">Human control</span>
       <h2 id="permissions-title">Agent permissions</h2>
-      <p>Decide which categories of actions Orbit can prepare or perform. Destructive and export requests always ask for approval.</p>
+      <p>Choose an autonomy tier for everyday edits. Destructive, export, and sharing requests always remain visible approval steps—even when permission is enabled.</p>
+      <div class="permission-tier-card">
+        <span>Current tier</span>
+        <strong id="permission-tier-label">Guided creation</strong>
+        <small id="permission-tier-copy">Orbit may prepare create and modify work; you approve every plan.</small>
+      </div>
       <div class="permission-list">
         <label class="permission-row"><span><strong>Read scene</strong><small>Inspect objects, context, and history</small></span><input type="checkbox" data-permission="read" checked><i></i></label>
         <label class="permission-row"><span><strong>Create objects</strong><small>Prepare new primitives and composites</small></span><input type="checkbox" data-permission="create" checked><i></i></label>
         <label class="permission-row"><span><strong>Modify objects</strong><small>Prepare transforms and materials</small></span><input type="checkbox" data-permission="modify" checked><i></i></label>
         <label class="permission-row"><span><strong>Delete objects</strong><small>Stage removals for your approval</small></span><input type="checkbox" data-permission="delete"><i></i></label>
         <label class="permission-row"><span><strong>Export model</strong><small>Request an STL export</small></span><input type="checkbox" data-permission="export"><i></i></label>
+        <label class="permission-row"><span><strong>Share scene</strong><small>Request a transferable scene link</small></span><input type="checkbox" data-permission="share"><i></i></label>
       </div>
       <button class="button button-primary modal-done" type="button" data-close-modal="permissions-modal">Done</button>
     </div>
@@ -319,6 +339,7 @@
       </div>
       <p id="review-summary" class="review-summary">Add a model to receive a visual and geometric review.</p>
       <div id="review-metrics" class="review-metrics"></div>
+      <div id="review-metric-detail" class="metric-drilldown" aria-live="polite">Select a score to inspect the evidence behind it.</div>
       <div id="review-findings" class="review-findings"></div>
       <div class="review-actions">
         <button id="apply-review-btn" class="button button-primary hidden" type="button">Prepare improvements</button>

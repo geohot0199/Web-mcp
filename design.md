@@ -62,15 +62,17 @@ Draft proposal
   ├─ high-level actions (add / modify / delete / symmetrize / constraint / restore / export)
   └─ diff summary
 
-Human chooses
+Human chooses each individual operation
+  ├─ Toggle any component off (for example, keep body / skip fins)
   ├─ Modify → agent revises draft; no scene mutation
-  ├─ Reject → discard draft; no scene mutation
-  └─ Approve → execute all actions as one agent history transaction
-                       ├─ Keep changes
-                       └─ Undo agent run
+  ├─ Reject all → discard draft; no scene mutation
+  └─ Apply selected → stream operations one at a time into the canvas
+                         ├─ Interrupt at a safe operation boundary
+                         ├─ Keep completed/partial run
+                         └─ Undo agent run
 ```
 
-The one-batch transaction is key. A human can understand what the agent did and reject the complete response without manually unwinding dozens of primitive operations.
+The completed subset is stored as one history transaction, while the canvas, proposal card, build overlay, and timeline update after every individual operation. This gives the human both the satisfying live-build moment and a simple whole-run recovery point.
 
 ## Tool architecture
 
@@ -92,9 +94,10 @@ get_history           add_comment                  export_stl / share_scene
 1. **Read tools** allow an agent to reason over actual scene state.
 2. **Plan tools are non-mutating.** They surface a card that the human can inspect.
 3. **Human approval remains in the UI.** `apply_approved_proposal` never circumvents the visible approval state.
-4. **Permissions gate capabilities** for reading, creating, modifying, deleting, and exporting.
-5. **Destructive restore/delete and export actions** are staged and visibly labeled.
-6. **History, versions, and activity log** make all completed actions inspectable and recoverable.
+4. **Live selection context is relayed automatically.** A local planner receives the current selected object, every tool result carries `live_context`, integrations can listen for `webmcp-selection-context`, and compatible native bridges receive context updates.
+5. **Object locks prevent edit races.** While Orbit streams a modify/delete/symmetry/restore operation, affected forms are temporarily locked in the viewport, inspector, and outline; direct human edits are rejected with a clear status instead of silently overwriting agent work.
+6. **Permission tiers gate capabilities** for reading, creating, modifying, deleting, exporting, and sharing. Direct mode applies permitted create/modify work, while destructive restore/delete plus export/share remain approval-gated.
+7. **History, versions, and activity log** make all completed actions inspectable and recoverable.
 
 ## Deterministic review design
 
@@ -106,7 +109,11 @@ The review panel intentionally does not claim to be an objective AI benchmark. I
 - simple composition coverage; and
 - active symmetry / on-ground constraints.
 
-These deterministic checks are also exposed through `validate_scene`, so agents can verify a result after proposing or applying a change.
+These deterministic checks are also exposed through `validate_scene`, so agents can verify a result after proposing or applying a change. Every score card is clickable: it exposes the relevant pair/unmatched object evidence, bounding-box reasoning, material inventory, or intersection pair; evidence-linked findings focus the implicated form in the canvas.
+
+## Agent routing evaluation
+
+`js/agent-router.js` is a dependency-free deterministic routing contract used by the local intent layer. `evals/agent-workflows.json` defines 24 varied requests and expected tool, key arguments, approval behavior, and sensitive-action behavior. Run `npm run evals` to verify routing, parameter extraction, and human-control guards independently from generic syntax/HTTP checks.
 
 ## Browser compatibility
 

@@ -1,6 +1,7 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/controls/OrbitControls.js';
 import { STLExporter } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/exporters/STLExporter.js';
+import { routePrompt } from './agent-router.js';
 
 /*
  * Orbit is deliberately client-side: the visual studio and the WebMCP tools
@@ -52,7 +53,17 @@ const els = {
   reviewSummary: $('#review-summary'),
   reviewMetrics: $('#review-metrics'),
   reviewFindings: $('#review-findings'),
-  applyReviewButton: $('#apply-review-btn')
+  reviewMetricDetail: $('#review-metric-detail'),
+  applyReviewButton: $('#apply-review-btn'),
+  buildOverlay: $('#agent-build-overlay'),
+  buildStep: $('#agent-build-step'),
+  buildProgress: $('#agent-build-progress'),
+  buildCount: $('#agent-build-count'),
+  selectionContext: $('#selection-context'),
+  selectionContextValue: $('#selection-context-value'),
+  selectionContextRevision: $('#selection-context-revision'),
+  permissionTierLabel: $('#permission-tier-label'),
+  permissionTierCopy: $('#permission-tier-copy')
 };
 
 const TYPES = ['cube', 'sphere', 'cylinder', 'cone', 'torus', 'plane'];
@@ -88,9 +99,13 @@ const state = {
   currentVersionId: null,
   pendingProposal: null,
   lastAgentRun: null,
+  activeRun: null,
+  locks: {},
+  selectionRevision: 0,
+  selectionContext: { selected_object: null, revision: 0, updated_at: null },
   activity: [],
   currentMode: 'planning',
-  permissions: { read: true, create: true, modify: true, delete: false, export: false }
+  permissions: { read: true, create: true, modify: true, delete: false, export: false, share: false }
 };
 
 let scene;
@@ -100,6 +115,7 @@ let controls;
 let modelGroup;
 let selectionBox;
 let pointerDown = null;
+let dragState = null;
 let toastTimer;
 let agentRequestNonce = 0;
 let currentReview = null;
@@ -239,6 +255,7 @@ function applyMutation(meta, mutate) {
 }
 
 function undoLastChange() {
+  if (state.activeRun) { interruptActiveRun(); return false; }
   if (state.historyIndex < 0) {
     setCanvasMessage('Nothing to undo');
     return false;
@@ -253,6 +270,7 @@ function undoLastChange() {
 }
 
 function redoLastChange() {
+  if (state.activeRun) { interruptActiveRun(); return false; }
   if (state.historyIndex >= state.history.length - 1) {
     setCanvasMessage('Nothing to redo');
     return false;
@@ -342,15 +360,10 @@ function initThree() {
   window.addEventListener('resize', resize);
   resize();
 
-  renderer.domElement.addEventListener('pointerdown', (event) => {
-    pointerDown = { x: event.clientX, y: event.clientY };
-  });
-  renderer.domElement.addEventListener('pointerup', (event) => {
-    if (!pointerDown) return;
-    const travel = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
-    pointerDown = null;
-    if (travel < 6) selectFromPointer(event);
-  });
+  renderer.domElement.addEventListener('pointerdown', beginCanvasPointer, { capture: true });
+  renderer.domElement.addEventListener('pointermove', moveCanvasPointer, { capture: true });
+  renderer.domElement.addEventListener('pointerup', endCanvasPointer, { capture: true });
+  renderer.domElement.addEventListener('pointercancel', endCanvasPointer, { capture: true });
 
   const animate = () => {
     requestAnimationFrame(animate);
@@ -416,9 +429,10 @@ function renderModel() {
     modelGroup.add(mesh);
   });
   updateSelectionVisual();
+  publishSelectionContext();
 }
 
-function selectFromPointer(event) {
+function raycastCanvas(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   const pointer = new THREE.Vector2(
     ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -426,15 +440,84 @@ function selectFromPointer(event) {
   );
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(pointer, camera);
-  const intersections = raycaster.intersectObjects(modelGroup.children, false);
-  selectObject(intersections.length ? intersections[0].object.userData.objectId : null);
+  return raycaster;
 }
 
+function objectHitFromPointer(event) {
+  const intersections = raycastCanvas(event).intersectObjects(modelGroup.children, false);
+  return intersections.length ? intersections[0].object : null;
+}
+
+function beginCanvasPointer(event) {
+  if (event.shiftKey) {
+    const mesh = objectHitFromPointer(event);
+    const objectId = mesh?.userData?.objectId;
+    if (objectId) {
+      if (!guardHumanEdit(objectId)) return;
+      const object = state.objects.find((candidate) => candidate.id === objectId);
+      dragState = {
+        id: objectId,
+        before: snapshotScene(),
+        plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -object.position[1]),
+        pointerId: event.pointerId
+      };
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture?.(event.pointerId);
+      renderer.domElement.style.cursor = 'grabbing';
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setCanvasMessage(`Moving ${object.name} — release to commit`);
+      return;
+    }
+  }
+  pointerDown = { x: event.clientX, y: event.clientY };
+}
+
+function moveCanvasPointer(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+  const target = new THREE.Vector3();
+  if (!raycastCanvas(event).ray.intersectPlane(dragState.plane, target)) return;
+  const object = state.objects.find((candidate) => candidate.id === dragState.id);
+  const mesh = modelGroup.children.find((candidate) => candidate.userData.objectId === dragState.id);
+  if (!object || !mesh) return;
+  object.position[0] = Number(target.x.toFixed(2));
+  object.position[2] = Number(target.z.toFixed(2));
+  mesh.position.set(...object.position);
+  updateSelectionVisual();
+  event.preventDefault();
+}
+
+function endCanvasPointer(event) {
+  if (dragState && (event.pointerId === dragState.pointerId || event.type === 'pointercancel')) {
+    const drag = dragState;
+    dragState = null;
+    controls.enabled = true;
+    try { renderer.domElement.releasePointerCapture?.(event.pointerId); } catch (_) { /* Pointer may already be released. */ }
+    renderer.domElement.style.cursor = '';
+    const entry = recordTransaction({ label: `Moved ${objectNameForId(drag.id)}`, source: 'human', why: 'Human repositioned a form directly in the viewport.' }, drag.before);
+    if (entry) {
+      refreshUI({ scene: true });
+      addActivity(`Moved ${objectNameForId(drag.id)}`, 'Human used Shift + drag to reposition a form in the viewport.', 'human');
+      setCanvasMessage(`${objectNameForId(drag.id)} moved`);
+    }
+    return;
+  }
+  if (!pointerDown) return;
+  const travel = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
+  pointerDown = null;
+  if (travel < 6) selectFromPointer(event);
+}
+
+function selectFromPointer(event) {
+  const mesh = objectHitFromPointer(event);
+  selectObject(mesh?.userData?.objectId || null);
+}
 function selectObject(id) {
   state.selectedId = state.objects.some((object) => object.id === id) ? id : null;
   renderObjectList();
   renderInspector();
   updateSelectionVisual();
+  publishSelectionContext();
   if (state.selectedId) {
     const selected = getSelectedObject();
     setCanvasMessage(`${selected.name} selected`);
@@ -443,6 +526,87 @@ function selectObject(id) {
 
 function getSelectedObject() {
   return state.objects.find((object) => object.id === state.selectedId) || null;
+}
+
+function getLiveAgentContext() {
+  return {
+    selected_object: clone(getSelectedObject()),
+    selection_revision: state.selectionRevision,
+    selection_updated_at: state.selectionContext.updated_at,
+    active_locks: Object.entries(state.locks).map(([objectId, lock]) => ({ object_id: objectId, ...lock })),
+    pending_proposal_id: state.pendingProposal?.id || null,
+    pending_proposal_status: state.pendingProposal?.status || null
+  };
+}
+
+function publishSelectionContext() {
+  const selected = getSelectedObject();
+  state.selectionRevision += 1;
+  state.selectionContext = {
+    selected_object: clone(selected),
+    revision: state.selectionRevision,
+    updated_at: Date.now()
+  };
+  els.selectionContextValue.textContent = selected ? selected.name : 'No object selected';
+  els.selectionContextRevision.textContent = `context v${state.selectionRevision}`;
+  els.selectionContext.classList.toggle('has-selection', Boolean(selected));
+
+  // Local and native integrations can subscribe instead of guessing whether a selection changed.
+  const detail = getLiveAgentContext();
+  window.dispatchEvent(new CustomEvent('webmcp-selection-context', { detail }));
+  const bridge = navigator.modelContext;
+  const publish = bridge?.setContext || bridge?.updateContext;
+  if (typeof publish === 'function') {
+    try { Promise.resolve(publish.call(bridge, { selection_context: detail })).catch(() => {}); }
+    catch (_) { /* Optional native context APIs are not available in every implementation. */ }
+  }
+}
+
+function isObjectLocked(id) {
+  return Boolean(id && state.locks[id]);
+}
+
+function describeLock(id) {
+  const lock = state.locks[id];
+  return lock ? `Orbit is applying step ${lock.step} of ${lock.total} to this form.` : '';
+}
+
+function guardHumanEdit(id) {
+  // A streamed agent run is one atomic history transaction. Selection and comments remain live,
+  // but model mutations wait for a safe boundary so unrelated human edits are never swallowed
+  // into the agent batch.
+  if (state.activeRun) {
+    const message = isObjectLocked(id)
+      ? describeLock(id)
+      : 'Orbit is streaming an atomic scene update. Interrupt the run to edit another form.';
+    setCanvasMessage(message || 'This form is temporarily locked while Orbit edits it.');
+    showToast('Scene edit paused while the agent run is in progress', 'error');
+    return false;
+  }
+  return true;
+}
+
+function actionTargetIds(action) {
+  if (action.objectIds?.length) return action.objectIds;
+  if (action.objectId) return [action.objectId];
+  if (action.kind === 'symmetrize' || action.kind === 'restore_version') return state.objects.map((object) => object.id);
+  return [];
+}
+
+function lockActionObjects(actions, runId) {
+  actions.forEach((action, index) => {
+    actionTargetIds(action).forEach((id) => {
+      if (state.objects.some((object) => object.id === id)) state.locks[id] = { run_id: runId, step: index + 1, total: actions.length, reason: actionLabel(action) };
+    });
+  });
+  renderObjectList();
+  renderInspector();
+}
+
+function unlockRunObjects(runId) {
+  Object.entries(state.locks).forEach(([id, lock]) => { if (lock.run_id === runId) delete state.locks[id]; });
+  renderObjectList();
+  renderInspector();
 }
 
 function updateSelectionVisual() {
@@ -507,6 +671,7 @@ function refreshUI({ scene = false } = {}) {
   renderVersions();
   renderProposal();
   renderActivity();
+  renderPermissionTier();
   updateSummary();
 }
 
@@ -526,13 +691,16 @@ function renderObjectList() {
     return;
   }
   state.objects.forEach((object) => {
-    const button = node('button', `object-row${object.id === state.selectedId ? ' active' : ''}`);
+    const locked = isObjectLocked(object.id);
+    const button = node('button', `object-row${object.id === state.selectedId ? ' active' : ''}${locked ? ' locked' : ''}`);
     button.type = 'button';
     button.dataset.objectId = object.id;
+    button.title = locked ? describeLock(object.id) : object.name;
     const symbol = node('span', 'object-row-symbol', TYPE_SYMBOLS[object.type] || '◇');
     const name = node('span', 'object-row-name', object.name);
     const type = node('span', 'object-row-type', object.type);
     button.append(symbol, name, type);
+    if (locked) button.append(node('span', 'object-row-lock', '⌁'));
     button.addEventListener('click', () => selectObject(object.id));
     els.objectList.append(button);
   });
@@ -540,21 +708,33 @@ function renderObjectList() {
 
 function renderInspector() {
   const object = getSelectedObject();
-  els.selectedStatus.textContent = object ? 'Active' : 'None';
+  const locked = object && isObjectLocked(object.id);
+  els.selectedStatus.textContent = object ? (locked ? 'Locked' : 'Active') : 'None';
   els.inspectorEmpty.classList.toggle('hidden', Boolean(object));
   els.inspectorContent.classList.toggle('hidden', !object);
   if (!object) return;
 
   els.nameInput.value = object.name;
+  els.nameInput.disabled = locked;
   els.typeBadge.textContent = TYPE_LABELS[object.type];
   els.objectId.textContent = object.id;
   $$('.number-input[data-transform]').forEach((input) => {
     const vector = object[input.dataset.transform];
     input.value = Number(vector[Number(input.dataset.axis)]).toFixed(2);
+    input.disabled = locked;
   });
-  $$('.material-chips button').forEach((button) => button.classList.toggle('active', button.dataset.material === object.material));
-  $$('.color-swatch').forEach((button) => button.classList.toggle('active', button.dataset.color.toLowerCase() === object.color.toLowerCase()));
+  $$('.material-chips button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.material === object.material);
+    button.disabled = locked;
+  });
+  $$('.color-swatch').forEach((button) => {
+    button.classList.toggle('active', button.dataset.color.toLowerCase() === object.color.toLowerCase());
+    button.disabled = locked;
+  });
   $('#object-color-input').value = validColor(object.color) ? object.color : MATERIALS[object.material].color;
+  $('#object-color-input').disabled = locked;
+  $('#duplicate-btn').disabled = locked;
+  $('#delete-btn').disabled = locked;
 }
 
 function renderConstraints() {
@@ -606,11 +786,12 @@ function actionLabel(action) {
   if (action.kind === 'add_constraint') return `Add ${action.constraint.label || titleCase(action.constraint.type)} constraint`;
   if (action.kind === 'restore_version') return `Restore ${action.versionLabel || 'saved version'}`;
   if (action.kind === 'export') return 'Export STL model';
+  if (action.kind === 'share') return 'Create shareable scene link';
   return 'Refine shared scene';
 }
 
 function actionCounts(actions) {
-  return actions.reduce((counts, action) => {
+  return actions.filter((action) => action.enabled !== false).reduce((counts, action) => {
     if (action.kind === 'add') counts.add += 1;
     else if (action.kind === 'delete') counts.remove += 1;
     else counts.change += 1;
@@ -623,21 +804,53 @@ function renderProposal() {
   const proposal = state.pendingProposal;
   if (!proposal) return;
 
-  const card = node('section', `proposal-card${proposal.status === 'applied' ? ' applied' : ''}`);
+  const isDraft = proposal.status === 'draft';
+  const isRunning = proposal.status === 'applying';
+  const isApplied = proposal.status === 'applied' || proposal.status === 'interrupted';
+  const card = node('section', `proposal-card${isApplied ? ' applied' : ''}${isRunning ? ' streaming' : ''}`);
   const heading = node('div', 'proposal-heading');
   const headingCopy = node('div');
-  headingCopy.append(node('span', 'eyebrow', proposal.status === 'applied' ? 'Applied agent run' : 'Agent proposal'), node('h3', '', proposal.title));
-  const stateCopy = proposal.status === 'applying' ? 'Applying' : proposal.status === 'applied' ? 'Reversible' : 'Approval needed';
+  headingCopy.append(node('span', 'eyebrow', isApplied ? 'Completed agent run' : isRunning ? 'Live agent build' : 'Agent proposal'), node('h3', '', proposal.title));
+  const stateCopy = isRunning ? 'Building live' : proposal.status === 'interrupted' ? 'Partial run' : isApplied ? 'Reversible' : 'Choose actions';
   heading.append(headingCopy, node('span', 'proposal-state', stateCopy));
   card.append(heading, node('p', 'proposal-description', proposal.description));
 
-  const steps = node('div', 'plan-steps');
-  proposal.actions.slice(0, 6).forEach((action, index) => {
-    const step = node('div', 'plan-step');
-    step.append(node('i', '', String(index + 1)), node('span', '', actionLabel(action)));
+  if (isDraft) {
+    const chooser = node('div', 'proposal-selection-controls');
+    chooser.append(node('span', '', 'Choose individual operations'));
+    const all = node('button', '', 'All');
+    const none = node('button', '', 'None');
+    all.type = 'button';
+    none.type = 'button';
+    all.addEventListener('click', () => { proposal.actions.forEach((action) => { action.enabled = true; }); renderProposal(); });
+    none.addEventListener('click', () => { proposal.actions.forEach((action) => { action.enabled = false; }); renderProposal(); });
+    chooser.append(all, none);
+    card.append(chooser);
+  }
+
+  const steps = node('div', 'plan-steps granular-steps');
+  proposal.actions.forEach((action, index) => {
+    const step = node(isDraft ? 'label' : 'div', `plan-step granular-step${isDraft ? ' has-toggle' : ' no-toggle'}${action.enabled === false ? ' disabled' : ''}${action.status === 'complete' ? ' complete' : ''}${action.status === 'running' ? ' running' : ''}${action.status === 'skipped' ? ' skipped' : ''}`);
+    if (isDraft) {
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = action.enabled !== false;
+      toggle.setAttribute('aria-label', `Include ${actionLabel(action)}`);
+      toggle.addEventListener('change', () => {
+        action.enabled = toggle.checked;
+        addActivity(`${toggle.checked ? 'Included' : 'Excluded'} ${actionLabel(action)}`, 'Human adjusted one operation before the agent run.', 'human');
+        renderProposal();
+      });
+      step.append(toggle);
+    }
+    const number = node('i', '', String(index + 1));
+    const copy = node('span', 'plan-step-copy');
+    copy.append(node('strong', '', actionLabel(action)));
+    if (isRunning || isApplied) copy.append(node('small', '', action.status === 'running' ? 'Applying now…' : action.status === 'complete' ? 'Built' : action.status === 'skipped' ? 'Skipped by you' : 'Waiting'));
+    step.append(number, copy);
+    if (isRunning && action.status === 'running') step.append(node('em', 'stream-dot'));
     steps.append(step);
   });
-  if (proposal.actions.length > 6) steps.append(node('div', 'plan-step', `+ ${proposal.actions.length - 6} more considered changes`));
   card.append(steps);
 
   const counts = actionCounts(proposal.actions);
@@ -645,16 +858,18 @@ function renderProposal() {
   if (counts.add) diff.append(node('span', 'diff-pill add', `+ ${counts.add} form${counts.add === 1 ? '' : 's'}`));
   if (counts.change) diff.append(node('span', 'diff-pill change', `~ ${counts.change} refinement${counts.change === 1 ? '' : 's'}`));
   if (counts.remove) diff.append(node('span', 'diff-pill remove', `− ${counts.remove} removal${counts.remove === 1 ? '' : 's'}`));
+  if (!counts.add && !counts.change && !counts.remove) diff.append(node('span', 'diff-pill', 'No operations selected'));
   card.append(diff);
 
   const why = node('p', 'proposal-why');
   why.append(node('strong', '', 'Why:'), node('span', '', proposal.why || 'It follows the current design direction.'));
   card.append(why);
 
-  if (proposal.status === 'draft') {
+  if (isDraft) {
     const actions = node('div', 'proposal-actions');
-    const approve = node('button', 'button button-primary', 'Approve & apply');
+    const approve = node('button', 'button button-primary', 'Apply selected');
     approve.type = 'button';
+    approve.disabled = !proposal.actions.some((action) => action.enabled !== false);
     approve.addEventListener('click', executePendingProposal);
     const refine = node('button', 'button button-quiet', 'Modify');
     refine.type = 'button';
@@ -663,32 +878,37 @@ function renderProposal() {
       els.agentInput.placeholder = 'Tell Orbit what to adjust in this plan…';
       setCanvasMessage('Describe the adjustment before you approve');
     });
-    const reject = node('button', 'button button-quiet', 'Reject');
+    const reject = node('button', 'button button-quiet', 'Reject all');
     reject.type = 'button';
     reject.addEventListener('click', discardDraftProposal);
     actions.append(approve, refine, reject);
     card.append(actions);
-  } else if (proposal.status === 'applied') {
+  } else if (isRunning) {
     const actions = node('div', 'proposal-actions applied-actions');
-    const keep = node('button', 'button button-primary', 'Keep changes');
+    const interrupt = node('button', 'button button-danger', 'Interrupt run');
+    interrupt.type = 'button';
+    interrupt.addEventListener('click', interruptActiveRun);
+    const progress = node('button', 'button button-quiet', `${proposal.completedCount || 0}/${proposal.selectedCount || 0} live`);
+    progress.type = 'button';
+    progress.disabled = true;
+    actions.append(interrupt, progress);
+    card.append(actions);
+  } else if (isApplied) {
+    const actions = node('div', `proposal-actions applied-actions${proposal.historyEntryId ? '' : ' single-action'}`);
+    const keep = node('button', 'button button-primary', proposal.status === 'interrupted' ? 'Keep partial run' : proposal.historyEntryId ? 'Keep changes' : 'Done');
     keep.type = 'button';
     keep.addEventListener('click', keepAppliedProposal);
-    const undo = node('button', 'button button-quiet', 'Undo agent run');
-    undo.type = 'button';
-    undo.addEventListener('click', revertLastAgentRun);
-    actions.append(keep, undo);
+    actions.append(keep);
+    if (proposal.historyEntryId) {
+      const undo = node('button', 'button button-quiet', 'Undo agent run');
+      undo.type = 'button';
+      undo.addEventListener('click', revertLastAgentRun);
+      actions.append(undo);
+    }
     card.append(actions);
-  } else {
-    const applying = node('div', 'proposal-actions');
-    const button = node('button', 'button button-quiet', 'Applying shared scene…');
-    button.type = 'button';
-    button.disabled = true;
-    applying.append(button);
-    card.append(applying);
   }
   els.proposalSlot.append(card);
 }
-
 function renderActivity() {
   els.activityList.replaceChildren();
   els.activityCount.textContent = String(state.activity.length);
@@ -731,6 +951,23 @@ function setAgentStatus(mode, title, copy) {
   els.topStatus.textContent = mode === 'thinking' ? 'Agent thinking' : mode === 'waiting' ? 'Awaiting approval' : mode === 'blocked' ? 'Action blocked' : 'Agent ready';
 }
 
+function renderPermissionTier() {
+  let label = 'Guided creation';
+  let copy = 'Orbit may prepare create and modify work; you approve every plan.';
+  if (!state.permissions.read) {
+    label = 'Private canvas';
+    copy = 'Scene reading is off, so Orbit cannot inspect the model.';
+  } else if (!state.permissions.create && !state.permissions.modify) {
+    label = 'Observe only';
+    copy = 'Orbit may inspect and review, but cannot prepare geometry edits.';
+  } else if (state.permissions.delete || state.permissions.export || state.permissions.share) {
+    label = 'Extended, approval-gated';
+    copy = 'Extra capabilities are enabled, while delete, export, and share remain explicit approval steps.';
+  }
+  els.permissionTierLabel.textContent = label;
+  els.permissionTierCopy.textContent = copy;
+}
+
 function setCanvasMessage(message) {
   els.canvasMessage.textContent = message;
   window.clearTimeout(els.canvasMessage._timer);
@@ -751,6 +988,7 @@ function showToast(message, type = 'success') {
 /* Object creation and edits */
 function createPrimitive(type, overrides = {}, source = 'human') {
   if (!TYPES.includes(type)) throw new Error(`Unsupported primitive: ${type}`);
+  if (source === 'human' && !guardHumanEdit()) return null;
   let created;
   const spreadIndex = state.objects.length % 5;
   const defaultX = state.objects.length ? (spreadIndex - 2) * .64 : 0;
@@ -780,6 +1018,7 @@ function createPrimitive(type, overrides = {}, source = 'human') {
 function patchObject(objectId, patch, source = 'human', label) {
   const object = state.objects.find((candidate) => candidate.id === objectId);
   if (!object) throw new Error(`Object ${objectId} was not found.`);
+  if (source === 'human' && !guardHumanEdit(objectId)) return object;
   const cleanPatch = {};
   if (typeof patch.name === 'string' && patch.name.trim()) cleanPatch.name = patch.name.trim().slice(0, 48);
   if (patch.position) cleanPatch.position = cleanVector(patch.position, object.position);
@@ -797,6 +1036,7 @@ function patchObject(objectId, patch, source = 'human', label) {
 function duplicateSelected() {
   const selected = getSelectedObject();
   if (!selected) return setCanvasMessage('Select a form to duplicate');
+  if (!guardHumanEdit(selected.id)) return;
   const duplicate = clone(selected);
   duplicate.id = makeId('obj');
   duplicate.name = `${selected.name} copy`;
@@ -811,6 +1051,7 @@ function duplicateSelected() {
 function deleteSelected() {
   const selected = getSelectedObject();
   if (!selected) return setCanvasMessage('Select a form to delete');
+  if (!guardHumanEdit(selected.id)) return;
   if (!window.confirm(`Delete “${selected.name}”? You can undo this change with Ctrl/Cmd + Z.`)) return;
   const result = applyMutation({ label: `Deleted ${selected.name}`, source: 'human', why: 'The human collaborator removed a form.' }, () => {
     state.objects = state.objects.filter((object) => object.id !== selected.id);
@@ -823,6 +1064,7 @@ function deleteSelected() {
 function snapSelectedToGrid() {
   const selected = getSelectedObject();
   if (!selected) return setCanvasMessage('Select a form to snap');
+  if (!guardHumanEdit(selected.id)) return;
   patchObject(selected.id, {
     position: selected.position.map((value) => Math.round(value)),
     rotation: selected.rotation.map((value) => Math.round(value / (Math.PI / 12)) * (Math.PI / 12))
@@ -837,6 +1079,7 @@ function objectNameForId(id) {
 /* Constraints, comments, and versions */
 function addConstraint(type, objectIds = null, source = 'human') {
   if (!['symmetry', 'ground'].includes(type)) throw new Error('Unsupported constraint type.');
+  if (source === 'human' && !guardHumanEdit()) return null;
   const existing = state.constraints.find((constraint) => constraint.type === type && JSON.stringify(constraint.objectIds || []) === JSON.stringify(objectIds || []));
   if (existing) {
     setCanvasMessage('That constraint is already active');
@@ -855,6 +1098,7 @@ function addConstraint(type, objectIds = null, source = 'human') {
 }
 
 function removeConstraint(id) {
+  if (!guardHumanEdit()) return;
   const constraint = state.constraints.find((item) => item.id === id);
   if (!constraint) return;
   const result = applyMutation({ label: `Removed ${constraint.label}`, source: 'human', why: 'The human collaborator removed a guardrail.' }, () => {
@@ -874,6 +1118,7 @@ function addComment(text, objectId = state.selectedId, author = 'Human collabora
 }
 
 function createVersion(label, source = 'human', announce = true) {
+  if (source === 'human' && !guardHumanEdit()) return null;
   const cleanLabel = String(label || `Checkpoint ${state.versions.length + 1}`).trim().slice(0, 30) || `Checkpoint ${state.versions.length + 1}`;
   const version = { id: makeId('version'), label: cleanLabel, createdAt: Date.now(), snapshot: snapshotScene() };
   state.versions.push(version);
@@ -887,6 +1132,7 @@ function createVersion(label, source = 'human', announce = true) {
 }
 
 function requestRestoreVersion(id) {
+  if (!guardHumanEdit()) return;
   const version = state.versions.find((candidate) => candidate.id === id);
   if (!version || version.id === state.currentVersionId) return;
   if (!window.confirm(`Restore “${version.label}”? Your current state stays in the undo history.`)) return;
@@ -972,6 +1218,19 @@ function validateConstraints() {
   return results;
 }
 
+function findObjectsBySemanticQuery(query) {
+  const ignoredWords = new Set(['the', 'a', 'an', 'all', 'my', 'scene', 'object', 'objects', 'please']);
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean).filter((word) => !ignoredWords.has(word)).map((word) => word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word);
+  const aliases = {
+    left: ['left', 'port'], right: ['right', 'starboard'], front: ['front', 'forward'], rear: ['rear', 'back'],
+    wheel: ['wheel', 'propulsion'], window: ['window', 'glass'], engine: ['engine', 'propulsion']
+  };
+  return state.objects.filter((object) => {
+    const corpus = `${object.name} ${object.type} ${object.material} ${object.tags.join(' ')}`.toLowerCase();
+    return words.every((word) => (aliases[word] || [word]).some((term) => corpus.includes(term)));
+  });
+}
+
 function getSceneStatistics() {
   const bounds = calculateSceneBounds();
   const materials = [...new Set(state.objects.map((object) => object.material))];
@@ -995,6 +1254,12 @@ function analyseDesign() {
     return {
       score: 0, symmetry: 0, composition: 0, materials: 0, geometry: 0,
       findings: [{ severity: 'info', title: 'Start with a direction', detail: 'Describe a model or add a primitive so Orbit can inspect the scene.' }],
+      metric_details: {
+        symmetry: { title: 'Symmetry evidence', detail: 'No forms exist yet to compare.', objectIds: [] },
+        composition: { title: 'Composition evidence', detail: 'No silhouette exists yet to assess.', objectIds: [] },
+        geometry: { title: 'Geometry evidence', detail: 'No structural forms exist yet to validate.', objectIds: [] },
+        materials: { title: 'Material evidence', detail: 'No finishes have been assigned yet.', objectIds: [] }
+      },
       recommendations: []
     };
   }
@@ -1003,7 +1268,10 @@ function analyseDesign() {
   const bounds = calculateSceneBounds();
   const distinctMaterials = new Set(state.objects.map((object) => object.material)).size;
   const count = state.objects.length;
-  const composition = clamp(Math.round(56 + Math.min(count, 9) * 4 + (bounds.size[0] > .4 && bounds.size[1] > .4 ? 8 : 0) - (Math.max(...bounds.size) / Math.max(Math.min(...bounds.size.filter((value) => value > .01), 1) > 12 ? 12 : 0)), 32, 98);
+  const nonZeroBounds = bounds.size.filter((value) => value > .01);
+  const smallestDimension = Math.max(Math.min(...nonZeroBounds, 1), .1);
+  const aspectRatio = Math.max(...bounds.size) / smallestDimension;
+  const composition = clamp(Math.round(56 + Math.min(count, 9) * 4 + (bounds.size[0] > .4 && bounds.size[1] > .4 ? 8 : 0) - (aspectRatio > 12 ? 12 : 0)), 32, 98);
   const materials = clamp(72 + Math.min(distinctMaterials, 3) * 8 - (distinctMaterials > 4 ? 7 : 0), 42, 96);
   const geometry = clamp(96 - overlaps.length * 11, 25, 96);
   const constraintResults = validateConstraints();
@@ -1011,20 +1279,60 @@ function analyseDesign() {
   const score = clamp(Math.round((symmetry.score * .28) + (composition * .25) + (materials * .19) + (geometry * .28) - failedConstraints.length * 3), 0, 99);
   const findings = [];
   const recommendations = [];
+  const unmatchedNames = symmetry.unmatched.map(objectNameForId);
+  const overlapNames = overlaps.map((pair) => `${objectNameForId(pair.first)} ↔ ${objectNameForId(pair.second)}`);
+  const metricDetails = {
+    symmetry: {
+      title: `Symmetry evidence · ${symmetry.score}%`,
+      detail: symmetry.score >= 90
+        ? `${symmetry.pairs} mirrored pair${symmetry.pairs === 1 ? '' : 's'} align across the center axis. Centered forms are intentionally ignored.`
+        : `Unmatched side form${unmatchedNames.length === 1 ? '' : 's'}: ${unmatchedNames.join(', ') || 'none identified'}. Orbit compares type and mirrored X/Y/Z positions within a small tolerance.`,
+      objectIds: symmetry.unmatched
+    },
+    composition: {
+      title: `Composition evidence · ${composition}%`,
+      detail: `${count} form${count === 1 ? '' : 's'} spans ${bounds.size.map((value) => value.toFixed(1)).join(' × ')} scene units. The heuristic rewards a readable multi-form silhouette and flags extreme bounding-box ratios.`,
+      objectIds: state.objects.map((object) => object.id)
+    },
+    geometry: {
+      title: `Geometry evidence · ${geometry}%`,
+      detail: overlaps.length ? `Potential structural intersections: ${overlapNames.join('; ')}. Decorative forms are excluded from this simple bounding-box check.` : 'No potential structural intersections were found between non-decorative forms.',
+      objectIds: overlaps.flatMap((pair) => [pair.first, pair.second])
+    },
+    materials: {
+      title: `Material evidence · ${materials}%`,
+      detail: `${distinctMaterials} finish${distinctMaterials === 1 ? '' : 'es'} across ${new Set(state.objects.map((object) => object.color.toLowerCase())).size} accent color${new Set(state.objects.map((object) => object.color.toLowerCase())).size === 1 ? '' : 's'}: ${[...new Set(state.objects.map((object) => MATERIALS[object.material]?.label || object.material))].join(', ')}.`,
+      objectIds: state.objects.map((object) => object.id)
+    }
+  };
 
-  findings.push({ severity: symmetry.score >= 90 ? 'success' : 'warning', title: `Symmetry · ${symmetry.score}%`, detail: symmetry.score >= 90 ? 'The side-to-side balance reads consistently.' : `${symmetry.unmatched.length} form${symmetry.unmatched.length === 1 ? '' : 's'} could be mirrored or intentionally offset.` });
+  findings.push({ severity: symmetry.score >= 90 ? 'success' : 'warning', title: `Symmetry · ${symmetry.score}%`, detail: symmetry.score >= 90 ? 'The side-to-side balance reads consistently.' : `${symmetry.unmatched.length} form${symmetry.unmatched.length === 1 ? '' : 's'} could be mirrored or intentionally offset.`, objectIds: symmetry.unmatched, metric: 'symmetry' });
   if (overlaps.length) {
-    findings.push({ severity: 'warning', title: `${overlaps.length} potential intersection${overlaps.length === 1 ? '' : 's'}`, detail: 'Some structural forms occupy the same volume. Inspect them before export.' });
+    findings.push({ severity: 'warning', title: `${overlaps.length} potential intersection${overlaps.length === 1 ? '' : 's'}`, detail: 'Some structural forms occupy the same volume. Inspect them before export.', objectIds: metricDetails.geometry.objectIds, metric: 'geometry' });
   } else {
-    findings.push({ severity: 'success', title: 'Clear form spacing', detail: 'No unintentional structural intersections were detected.' });
+    findings.push({ severity: 'success', title: 'Clear form spacing', detail: 'No unintentional structural intersections were detected.', objectIds: [], metric: 'geometry' });
   }
-  findings.push({ severity: materials >= 88 ? 'success' : 'info', title: `Material clarity · ${materials}%`, detail: distinctMaterials > 1 ? 'The finish palette gives the silhouette readable hierarchy.' : 'A secondary finish could clarify functional accents.' });
-  failedConstraints.forEach((result) => findings.push({ severity: 'warning', title: result.constraint, detail: result.message }));
+  findings.push({ severity: materials >= 88 ? 'success' : 'info', title: `Material clarity · ${materials}%`, detail: distinctMaterials > 1 ? 'The finish palette gives the silhouette readable hierarchy.' : 'A secondary finish could clarify functional accents.', objectIds: metricDetails.materials.objectIds, metric: 'materials' });
+  failedConstraints.forEach((result) => findings.push({ severity: 'warning', title: result.constraint, detail: result.message, objectIds: result.objectIds || [], metric: 'constraints' }));
   if (symmetry.score < 92) recommendations.push('Prepare mirrored counterparts for unmatched side forms.');
   if (overlaps.length) recommendations.push('Review the intersecting structural forms before final export.');
   if (distinctMaterials < 2 && count > 2) recommendations.push('Use one accent finish to strengthen visual hierarchy.');
 
-  return { score, symmetry: symmetry.score, composition, materials, geometry, overlaps, findings, recommendations, constraint_results: constraintResults };
+  return { score, symmetry: symmetry.score, composition, materials, geometry, overlaps, findings, recommendations, metric_details: metricDetails, constraint_results: constraintResults };
+}
+
+function showMetricDetail(metric) {
+  const detail = currentReview?.metric_details?.[metric];
+  if (!detail) {
+    els.reviewMetricDetail.textContent = 'Select a score to inspect the evidence behind it.';
+    return;
+  }
+  els.reviewMetricDetail.replaceChildren();
+  const heading = node('strong', '', detail.title);
+  const description = node('p', '', detail.detail);
+  const evidence = node('small', '', detail.objectIds?.length ? `Evidence linked to ${detail.objectIds.length} form${detail.objectIds.length === 1 ? '' : 's'} — click a related finding to focus it.` : 'No problematic form needs focus for this metric.');
+  els.reviewMetricDetail.append(heading, description, evidence);
+  $$('.metric-card[data-metric]').forEach((card) => card.classList.toggle('active', card.dataset.metric === metric));
 }
 
 function showDesignReview() {
@@ -1035,25 +1343,40 @@ function showDesignReview() {
     : 'Add a model to receive a visual and geometric review.';
   els.reviewMetrics.replaceChildren();
   [
-    ['Symmetry', currentReview.symmetry], ['Composition', currentReview.composition], ['Geometry', currentReview.geometry], ['Materials', currentReview.materials]
-  ].forEach(([label, value]) => {
-    const card = node('article', 'metric-card');
+    ['symmetry', 'Symmetry', currentReview.symmetry], ['composition', 'Composition', currentReview.composition], ['geometry', 'Geometry', currentReview.geometry], ['materials', 'Materials', currentReview.materials]
+  ].forEach(([key, label, value]) => {
+    const card = node('button', 'metric-card');
+    card.type = 'button';
+    card.dataset.metric = key;
+    card.title = `Show ${label.toLowerCase()} evidence`;
     const meter = node('span', 'metric-meter');
     const fill = node('i');
     fill.style.width = `${value}%`;
     meter.append(fill);
     card.append(node('span', '', label), node('strong', '', state.objects.length ? `${value}%` : '—'), meter);
+    card.addEventListener('click', () => showMetricDetail(key));
     els.reviewMetrics.append(card);
   });
   els.reviewFindings.replaceChildren();
   currentReview.findings.forEach((finding) => {
-    const item = node('article', `review-finding${finding.severity === 'warning' ? ' warning' : ''}`);
+    const canFocusObject = finding.objectIds?.length;
+    const item = node(canFocusObject ? 'button' : 'article', `review-finding${finding.severity === 'warning' ? ' warning' : ''}${canFocusObject ? ' focusable' : ''}`);
+    if (canFocusObject) {
+      item.type = 'button';
+      item.title = 'Focus related form in canvas';
+      item.addEventListener('click', () => {
+        selectObject(finding.objectIds[0]);
+        if (finding.metric) showMetricDetail(finding.metric);
+        setCanvasMessage(`Focused evidence: ${objectNameForId(finding.objectIds[0])}`);
+      });
+    }
     item.append(node('i', '', finding.severity === 'warning' ? '!' : finding.severity === 'success' ? '✓' : '•'));
     const copy = node('div');
     copy.append(node('strong', '', finding.title), node('p', '', finding.detail));
     item.append(copy);
     els.reviewFindings.append(item);
   });
+  showMetricDetail('symmetry');
   els.applyReviewButton.classList.toggle('hidden', !currentReview.recommendations?.length);
   openModal('review-modal');
   addActivity('Completed design review', state.objects.length ? `Overall collaboration score: ${currentReview.score}/100.` : 'The scene is still empty.', 'agent');
@@ -1309,7 +1632,14 @@ function stageProposal(plan) {
     why: String(plan.why || '').slice(0, 240),
     intent: String(plan.intent || '').slice(0, 300),
     style: plan.style || detectStyle(plan.intent || ''),
-    actions: clone(plan.actions || []),
+    actions: clone(plan.actions || []).map((action, index) => ({
+      ...action,
+      id: action.id || `operation_${index + 1}_${makeId('step')}`,
+      enabled: action.enabled !== false,
+      status: 'pending'
+    })),
+    selectedCount: 0,
+    completedCount: 0,
     status: 'draft',
     createdAt: Date.now()
   };
@@ -1326,6 +1656,7 @@ function permissionForAction(action) {
   if (action.kind === 'add') return 'create';
   if (action.kind === 'delete' || action.kind === 'restore_version') return 'delete';
   if (action.kind === 'export') return 'export';
+  if (action.kind === 'share') return 'share';
   return 'modify';
 }
 
@@ -1409,10 +1740,56 @@ function mirrorUnpairedObjects(targetIds = null) {
   if (additions.length) state.selectedId = additions[additions.length - 1].id;
 }
 
+function recordTransaction(meta, before) {
+  const after = snapshotScene();
+  if (JSON.stringify(before) === JSON.stringify(after)) return null;
+  state.history = state.history.slice(0, state.historyIndex + 1);
+  const entry = {
+    id: makeId('change'),
+    label: meta.label || 'Agent run',
+    source: meta.source || 'agent',
+    why: meta.why || '',
+    runId: meta.runId || null,
+    timestamp: Date.now(),
+    before,
+    after
+  };
+  state.history.push(entry);
+  if (state.history.length > 60) state.history.shift();
+  state.historyIndex = state.history.length - 1;
+  persistWorkspace();
+  return entry;
+}
+
+function updateBuildOverlay(proposal, action) {
+  const total = proposal.selectedCount || 0;
+  const completed = proposal.completedCount || 0;
+  els.buildOverlay.classList.remove('hidden');
+  els.buildStep.textContent = action ? actionLabel(action) : 'Preparing shared scene…';
+  els.buildCount.textContent = `${completed} / ${total} operation${total === 1 ? '' : 's'}`;
+  els.buildProgress.style.width = `${total ? Math.round((completed / total) * 100) : 0}%`;
+}
+
+function hideBuildOverlay() {
+  els.buildOverlay.classList.add('hidden');
+  els.buildProgress.style.width = '0%';
+}
+
+function interruptActiveRun() {
+  const run = state.activeRun;
+  if (!run || run.finished) return;
+  run.interrupted = true;
+  setAgentStatus('waiting', 'Stopping after current safe step', 'Orbit will preserve completed work and return control to you.');
+  addActivity('Interrupt requested', 'Human asked Orbit to stop the live build after its current safe boundary.', 'human');
+  setCanvasMessage('Stopping agent run at the next safe step');
+}
+
 async function executePendingProposal({ autoApproved = false } = {}) {
   const proposal = state.pendingProposal;
   if (!proposal || proposal.status !== 'draft') return { success: false, message: 'There is no pending proposal to apply.' };
-  const blocked = findBlockedPermissions(proposal.actions);
+  const selectedActions = proposal.actions.filter((action) => action.enabled !== false);
+  if (!selectedActions.length) return { success: false, message: 'Choose at least one operation before applying the proposal.' };
+  const blocked = findBlockedPermissions(selectedActions);
   if (blocked.length) {
     const readable = blocked.map(titleCase).join(', ');
     setAgentStatus('blocked', 'Action blocked by permission', `Enable ${readable} in Agent permissions to continue.`);
@@ -1423,36 +1800,86 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   }
 
   proposal.status = 'applying';
+  proposal.selectedCount = selectedActions.length;
+  proposal.completedCount = 0;
+  proposal.actions.forEach((action) => { action.status = action.enabled === false ? 'skipped' : 'pending'; });
+  const run = {
+    id: makeId('run'),
+    proposalId: proposal.id,
+    before: snapshotScene(),
+    selectedActions,
+    interrupted: false,
+    finished: false
+  };
+  state.activeRun = run;
+  lockActionObjects(selectedActions, run.id);
+  updateBuildOverlay(proposal);
   renderProposal();
-  setAgentStatus('thinking', 'Applying approved changes', 'Orbit is updating the shared scene, one auditable batch at a time.');
-  await delay(240);
-  if (state.pendingProposal !== proposal) return { success: false, message: 'The pending proposal changed before execution.' };
+  setAgentStatus('thinking', `Building 0/${selectedActions.length} live`, 'Each approved operation is appearing in the shared canvas as it completes.');
+  addActivity(`Started live build: ${proposal.title}`, `${selectedActions.length} selected operation${selectedActions.length === 1 ? '' : 's'} will stream into the canvas.`, 'agent');
 
-  try {
-    const modelActions = proposal.actions.filter((action) => action.kind !== 'export');
-    const execution = applyMutation({ label: proposal.title, source: 'agent', why: proposal.why, runId: proposal.id }, () => {
-      modelActions.forEach(executeAction);
-    });
-    proposal.status = 'applied';
-    proposal.historyEntryId = execution.entry?.id || null;
-    proposal.before = execution.before;
-    state.lastAgentRun = { proposalId: proposal.id, historyEntryId: execution.entry?.id || null, before: execution.before };
-    if (proposal.actions.some((action) => action.kind === 'export')) exportSTL();
+  for (let index = 0; index < selectedActions.length; index += 1) {
+    const action = selectedActions[index];
+    if (run.interrupted) break;
+    action.status = 'running';
+    updateBuildOverlay(proposal, action);
     renderProposal();
-    setAgentStatus('ready', 'Changes applied — your call', 'Keep the run, undo it, or continue directing the next iteration.');
-    addMessage('agent', `Applied “${proposal.title}”. ${proposal.why || 'The full batch is still reversible while you review it.'}`);
-    addActivity(`Applied “${proposal.title}”`, `${proposal.actions.length} approved operation${proposal.actions.length === 1 ? '' : 's'} changed the shared scene.`, 'agent');
-    setCanvasMessage(autoApproved ? 'Direct mode applied the agent run' : 'Agent run applied — review it');
-    return { success: true, proposal_id: proposal.id, message: 'Approved proposal applied.' };
-  } catch (error) {
-    proposal.status = 'draft';
-    renderProposal();
-    setAgentStatus('blocked', 'Could not apply the plan', error.message);
-    addActivity('Proposal execution failed', error.message, 'warning');
-    return { success: false, message: error.message };
+    setAgentStatus('thinking', `Building ${index + 1}/${selectedActions.length} live`, actionLabel(action));
+    await delay(310);
+    if (run.interrupted) {
+      action.status = 'pending';
+      break;
+    }
+    try {
+      executeAction(action);
+      action.status = 'complete';
+      proposal.completedCount += 1;
+      renderModel();
+      refreshUI({ scene: false });
+      updateBuildOverlay(proposal, action);
+      addActivity(`Built ${actionLabel(action)}`, proposal.why || 'The approved operation appeared in the shared scene.', 'agent');
+      await delay(150);
+    } catch (error) {
+      action.status = 'error';
+      action.error = error.message;
+      addActivity(`Could not complete ${actionLabel(action)}`, error.message, 'warning');
+    }
   }
-}
 
+  const completed = proposal.completedCount;
+  const interrupted = run.interrupted;
+  const entry = recordTransaction({ label: interrupted ? `${proposal.title} (partial)` : proposal.title, why: proposal.why, runId: proposal.id, source: 'agent' }, run.before);
+  proposal.status = interrupted ? 'interrupted' : 'applied';
+  proposal.historyEntryId = entry?.id || null;
+  proposal.before = run.before;
+  state.lastAgentRun = entry ? { proposalId: proposal.id, historyEntryId: entry.id, before: run.before } : null;
+  run.finished = true;
+  unlockRunObjects(run.id);
+  state.activeRun = null;
+  hideBuildOverlay();
+
+  // Side effects run only after the streamed model state is complete and remain proposal-gated.
+  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) exportSTL();
+  if (!interrupted && selectedActions.some((action) => action.kind === 'share')) await shareScene();
+
+  renderProposal();
+  refreshUI({ scene: false });
+  if (interrupted) {
+    setAgentStatus('ready', 'Live build interrupted', `${completed} of ${selectedActions.length} selected operations completed; keep or undo the partial run.`);
+    addMessage('agent', `Stopped safely. I completed ${completed} of ${selectedActions.length} selected operations, and the partial result is still reversible.`);
+    addActivity(`Interrupted “${proposal.title}”`, `${completed} operation${completed === 1 ? '' : 's'} completed before human interruption.`, 'human');
+    setCanvasMessage(`Live build stopped after ${completed} operation${completed === 1 ? '' : 's'}`);
+  } else {
+    setAgentStatus('ready', 'Live build complete — your call', 'Keep the streamed run, undo it, or direct the next iteration.');
+    addMessage('agent', `Finished “${proposal.title}” one operation at a time. ${proposal.why || 'The full batch is still reversible while you review it.'}`);
+    addActivity(`Completed “${proposal.title}”`, `${completed} approved operation${completed === 1 ? '' : 's'} streamed into the shared scene.`, 'agent');
+    setCanvasMessage(autoApproved ? 'Direct mode streamed the agent run' : 'Live agent run complete — review it');
+  }
+  if (run.queuedRequest) {
+    window.setTimeout(() => handleAgentRequest(run.queuedRequest, { alreadyLogged: true }), 40);
+  }
+  return { success: true, proposal_id: proposal.id, completed_operations: completed, interrupted, message: interrupted ? 'Partial agent run stopped safely.' : 'Approved proposal applied incrementally.' };
+}
 function discardDraftProposal() {
   const proposal = state.pendingProposal;
   if (!proposal || proposal.status !== 'draft') return;
@@ -1515,34 +1942,121 @@ function planFromReview() {
   addMessage('agent', 'I prepared only the safe, review-backed improvements for your approval.');
 }
 
-async function handleAgentRequest(text) {
+async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   const request = String(text || '').trim();
   if (!request) return;
   const lower = request.toLowerCase();
   const nonce = ++agentRequestNonce;
+  const liveContext = getLiveAgentContext();
+  const routedIntent = routePrompt(request, { selectedObject: getSelectedObject() });
   els.agentInput.value = '';
-  addMessage('human', request);
+  if (!alreadyLogged) addMessage('human', request);
+  addActivity(`Intent routed to ${routedIntent.tool}`, routedIntent.reason || `Selection context v${liveContext.selection_revision} was attached automatically.`, 'agent');
 
-  if (/^(stop|pause|wait)\b/.test(lower)) {
-    state.pendingProposal = state.pendingProposal?.status === 'applying' ? null : state.pendingProposal;
-    renderProposal();
-    setAgentStatus('ready', 'Agent paused', 'I stopped before making another change.');
-    addMessage('agent', 'Paused. I will not make further changes until you give a new direction.');
-    addActivity('Agent interrupted', 'Human paused the current collaboration flow.', 'human');
+  if (state.activeRun && !/^(stop|pause|wait)\b/.test(lower)) {
+    state.activeRun.queuedRequest = request;
+    interruptActiveRun();
+    addMessage('agent', 'I received your new direction. I’m stopping at the next safe step, then I’ll plan that revision against the updated scene.');
     return;
   }
-  if (/\bundo\b|go back|revert/.test(lower)) {
-    if (state.pendingProposal?.status === 'applied') revertLastAgentRun();
+
+  if (routedIntent.tool === 'interrupt_agent_run') {
+    if (state.activeRun) {
+      interruptActiveRun();
+    } else {
+      setAgentStatus('ready', 'Agent paused', 'I stopped before making another change.');
+      addMessage('agent', 'Paused. I will not make further changes until you give a new direction.');
+      addActivity('Agent interrupted', 'Human paused the current collaboration flow.', 'human');
+    }
+    return;
+  }
+  if (routedIntent.tool === 'undo_agent_changes') {
+    if (state.pendingProposal?.status === 'applied' || state.pendingProposal?.status === 'interrupted') revertLastAgentRun();
     else undoLastChange();
     return;
   }
-  if (/review|diagnos|check (the )?(scene|model)|is my model good/.test(lower)) {
+  if (routedIntent.tool === 'get_scene') {
+    const stats = getSceneStatistics();
+    setAgentStatus('ready', 'Scene read complete', `${stats.object_count} form${stats.object_count === 1 ? '' : 's'} and ${stats.constraint_count} active guardrail${stats.constraint_count === 1 ? '' : 's'} are in view.`);
+    addMessage('agent', stats.object_count ? `I can see ${stats.object_count} form${stats.object_count === 1 ? '' : 's'} across ${Object.keys(stats.types).join(', ')}. The current symmetry reading is ${stats.symmetry_score}%.` : 'The shared scene is empty and ready for your first design direction.');
+    return;
+  }
+  if (routedIntent.tool === 'get_selected_object') {
+    const selected = getSelectedObject();
+    setAgentStatus('ready', 'Selection context read', selected ? `Following ${selected.name} automatically.` : 'No form is currently selected.');
+    addMessage('agent', selected ? `This is ${selected.name}, a ${selected.type} at [${selected.position.map((value) => value.toFixed(1)).join(', ')}] with a ${MATERIALS[selected.material].label.toLowerCase()} finish.` : 'Nothing is selected yet. Click a form and I will use it as the context for “this” or “that”.');
+    return;
+  }
+  if (routedIntent.tool === 'find_objects') {
+    const matches = findObjectsBySemanticQuery(routedIntent.parameters.query);
+    setAgentStatus('ready', 'Semantic search complete', `${matches.length} matching form${matches.length === 1 ? '' : 's'} found.`);
+    if (matches[0]) selectObject(matches[0].id);
+    addMessage('agent', matches.length ? `I found ${matches.length} match${matches.length === 1 ? '' : 'es'}: ${matches.map((object) => object.name).join(', ')}.${matches[0] ? ` I selected ${matches[0].name}.` : ''}` : `I could not find a form matching “${routedIntent.parameters.query}”.`);
+    return;
+  }
+  if (routedIntent.tool === 'analyze_design') {
     setAgentStatus('thinking', 'Inspecting the shared scene', 'Reading geometry, material, symmetry, and active constraints.');
     await delay(260);
     if (nonce !== agentRequestNonce) return;
     showDesignReview();
     setAgentStatus('ready', 'Review ready', 'I surfaced clear findings and safe next steps.');
-    addMessage('agent', 'I completed a design review. Open the review card for the score, findings, and any safe improvement proposal.');
+    addMessage('agent', 'I completed a design review. Click any score for its exact evidence, or click a linked finding to focus the related form.');
+    return;
+  }
+  if (routedIntent.tool === 'validate_scene') {
+    const validation = validateScene();
+    const warnings = validation.issues.length;
+    setAgentStatus('ready', 'Scene validation complete', warnings ? `${warnings} issue${warnings === 1 ? '' : 's'} needs attention.` : 'No deterministic validation issues found.');
+    addMessage('agent', warnings ? `Validation found ${warnings} item${warnings === 1 ? '' : 's'} to inspect: ${validation.issues.map((issue) => issue.title).join(', ')}.` : 'Validation passed: no structural intersections or active constraint failures were found.');
+    addActivity('Validated shared scene', warnings ? `${warnings} deterministic issue${warnings === 1 ? '' : 's'} reported.` : 'No deterministic issues reported.', 'agent');
+    return;
+  }
+  if (routedIntent.tool === 'create_version') {
+    const version = createVersion(routedIntent.parameters.name, 'human');
+    if (version) addMessage('agent', `Saved ${version.label}. You can restore it from the version rail at any time.`);
+    return;
+  }
+  if (routedIntent.tool === 'add_comment') {
+    try {
+      const comment = addComment(routedIntent.parameters.text, getSelectedObject()?.id, 'Human collaborator', 'human');
+      addMessage('agent', `Added your annotation to ${objectNameForId(comment.objectId)}. I’ll retain it in the shared design context.`);
+    } catch (error) { addMessage('agent', error.message); }
+    return;
+  }
+  if (routedIntent.tool === 'add_constraint') {
+    const type = routedIntent.parameters.type;
+    stageProposal({
+      title: `Add ${type} constraint`,
+      description: type === 'symmetry' ? 'Keep future side forms mirrored across the center axis.' : 'Validate applicable forms against the ground plane.',
+      why: 'Guardrails turn your design intent into a check that Orbit can verify after every proposed change.',
+      intent: request,
+      style: state.designContext.style,
+      actions: [{ kind: 'add_constraint', constraint: { id: makeId('constraint'), type, objectIds: null, label: type === 'symmetry' ? 'Mirror across center axis' : 'Keep forms on ground plane' } }]
+    });
+    addMessage('agent', 'I staged that guardrail for your approval. It will appear in every subsequent validation report.');
+    return;
+  }
+  if (routedIntent.tool === 'export_stl' || routedIntent.tool === 'share_scene') {
+    const isExport = routedIntent.tool === 'export_stl';
+    stageProposal({
+      title: isExport ? 'Export model as STL' : 'Create shareable scene link',
+      description: isExport ? 'Create a local STL download from the current shared scene.' : 'Generate and copy a local URL-safe link encoding this scene. No upload occurs.',
+      why: isExport ? 'File export is sensitive and remains visible for approval.' : 'Sharing creates a transferable design state and remains visible for approval.',
+      intent: request,
+      style: state.designContext.style,
+      actions: [{ kind: isExport ? 'export' : 'share' }]
+    });
+    addMessage('agent', `${isExport ? 'Export' : 'Sharing'} is staged as a sensitive action. Enable the matching permission and approve the visible card to continue.`);
+    return;
+  }
+  if (routedIntent.tool === 'restore_version') {
+    const requestWords = lower.split(/\s+/);
+    const version = state.versions.find((candidate) => requestWords.some((word) => candidate.label.toLowerCase().includes(word)) && candidate.id !== state.currentVersionId);
+    if (!version) {
+      addMessage('agent', 'I need a specific saved checkpoint to restore. Choose one from the version rail, or name the checkpoint in your request.');
+      return;
+    }
+    stageProposal({ title: `Restore ${version.label}`, description: 'Return the complete shared scene to the selected saved checkpoint.', why: 'Version restoration changes the full scene, so it remains a visible approval step.', intent: request, style: state.designContext.style, actions: [{ kind: 'restore_version', versionId: version.id, versionLabel: version.label }] });
     return;
   }
   if (refinePendingProposal(request)) return;
@@ -1558,12 +2072,25 @@ async function handleAgentRequest(text) {
   }
   stageProposal(plan);
   addMessage('agent', `I prepared “${plan.title}”. Review the steps, revise the plan, or approve it when it feels right.`);
-  if (state.currentMode === 'direct') await executePendingProposal({ autoApproved: true });
+  const includesSensitiveAction = plan.actions.some((action) => ['delete', 'restore_version', 'export', 'share'].includes(action.kind));
+  if (state.currentMode === 'direct' && !includesSensitiveAction) await executePendingProposal({ autoApproved: true });
+  if (state.currentMode === 'direct' && includesSensitiveAction) {
+    setCanvasMessage('Sensitive actions stay approval-gated, even in Direct mode');
+  }
 }
 
 /* WebMCP tools: goal-oriented and state-aware instead of a long list of UI clicks */
 function registerTool(definition) {
-  toolRegistry.set(definition.name, definition);
+  const execute = definition.execute;
+  toolRegistry.set(definition.name, {
+    ...definition,
+    // Every tool response carries the latest live selection/lock context. This avoids
+    // forcing an agent to guess whether the human changed selection between turns.
+    execute: async (args = {}) => {
+      const result = await execute(args);
+      return result && typeof result === 'object' ? { ...result, live_context: getLiveAgentContext() } : result;
+    }
+  });
 }
 
 function readAllowed() {
@@ -1579,7 +2106,13 @@ function stageExternalPlan(plan) {
     success: true,
     requires_human_approval: true,
     proposal_id: proposal.id,
-    proposal: { title: proposal.title, description: proposal.description, action_count: proposal.actions.length, status: proposal.status }
+    proposal: {
+      title: proposal.title,
+      description: proposal.description,
+      action_count: proposal.actions.length,
+      status: proposal.status,
+      operations: proposal.actions.map((action) => ({ id: action.id, label: actionLabel(action), enabled: action.enabled !== false, status: action.status }))
+    }
   };
 }
 
@@ -1612,12 +2145,7 @@ function defineTools() {
     parameters: { type: 'object', properties: { query: { type: 'string', description: 'Semantic description of desired scene objects.' } }, required: ['query'] },
     execute: async ({ query }) => {
       const denied = readAllowed(); if (denied) return denied;
-      const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-      const aliases = { left: ['left', 'port'], right: ['right', 'starboard'], wheel: ['wheel', 'propulsion'], window: ['window', 'glass'], engine: ['engine', 'propulsion'] };
-      const objects = state.objects.filter((object) => {
-        const corpus = `${object.name} ${object.type} ${object.material} ${object.tags.join(' ')}`.toLowerCase();
-        return words.every((word) => (aliases[word] || [word]).some((term) => corpus.includes(term)));
-      });
+      const objects = findObjectsBySemanticQuery(query);
       return { success: true, query, objects: clone(objects), match_count: objects.length };
     }
   });
@@ -1735,6 +2263,16 @@ function defineTools() {
     execute: async () => revertLastAgentRun()
   });
   registerTool({
+    name: 'interrupt_agent_run',
+    description: 'Request a safe interruption of an in-progress streamed agent run. Completed operations remain visible and can be kept or undone as one partial batch.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    execute: async () => {
+      if (!state.activeRun) return { success: false, message: 'No streamed agent run is active.' };
+      interruptActiveRun();
+      return { success: true, message: 'Safe interruption requested; Orbit will stop at the next operation boundary.' };
+    }
+  });
+  registerTool({
     name: 'add_comment',
     description: 'Attach a concise agent or human-readable annotation to a scene object for contextual collaboration.',
     parameters: { type: 'object', properties: { object_id: { type: 'string' }, text: { type: 'string' }, author: { type: 'string' } }, required: ['object_id', 'text'] },
@@ -1751,9 +2289,9 @@ function defineTools() {
   });
   registerTool({
     name: 'share_scene',
-    description: 'Generate a URL-safe link encoding the current scene state for collaboration. No network upload is performed.',
+    description: 'Stage a URL-safe collaboration link request. Sharing is treated as sensitive: the human must approve the visible proposal and enable Share scene permission. No network upload is performed.',
     parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => readAllowed() || ({ success: true, share_url: generateShareLink() })
+    execute: async () => stageExternalPlan({ title: 'Create shareable scene link', description: 'Generate and copy a URL-safe link encoding the current scene state. No model data is uploaded to a server.', why: 'Sharing creates a transferable copy of the design and stays under explicit human control.', intent: 'Share current scene', style: state.designContext.style, actions: [{ kind: 'share' }] })
   });
 }
 
@@ -1846,6 +2384,20 @@ function decodePayload(value) {
 function generateShareLink() {
   const payload = { scene: snapshotScene(), createdAt: Date.now(), app: 'orbit-webmcp-studio' };
   return `${window.location.origin}${window.location.pathname}#model=${encodeURIComponent(encodePayload(payload))}`;
+}
+
+async function shareScene() {
+  const shareUrl = generateShareLink();
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(shareUrl);
+    else window.prompt('Copy this local scene link:', shareUrl);
+    addActivity('Share link created', 'A local URL-encoded scene link was generated after human approval.', 'human');
+    showToast('Share link copied to clipboard');
+  } catch (_) {
+    window.prompt('Copy this local scene link:', shareUrl);
+    showToast('Share link is ready to copy');
+  }
+  return { success: true, share_url: shareUrl };
 }
 
 function loadSharedSceneFromLocation() {
@@ -1955,6 +2507,7 @@ function bindEvents() {
     input.checked = Boolean(state.permissions[input.dataset.permission]);
     input.addEventListener('change', () => {
       state.permissions[input.dataset.permission] = input.checked;
+      renderPermissionTier();
       addActivity(`${titleCase(input.dataset.permission)} permission ${input.checked ? 'enabled' : 'disabled'}`, 'Human updated agent capability boundaries.', 'human');
       persistWorkspace();
     });
@@ -2000,6 +2553,7 @@ async function bootstrap() {
   defineTools();
   exposeLocalBridge();
   refreshUI({ scene: true });
+  publishSelectionContext();
   addActivity('Studio ready', 'The human and agent now share the same inspectable scene state.', 'agent');
   await registerWebMCPTools();
 }

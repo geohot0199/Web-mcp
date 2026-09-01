@@ -5,7 +5,7 @@
 Orbit turns a browser-based 3D editor into a shared human–agent workflow. Instead of giving an agent a collection of blind UI clicks, the app gives it scene awareness, goal-level tools, visible proposals, deterministic reviews, and a clear approval boundary.
 
 ![No build step required](https://img.shields.io/badge/runtime-static%20browser%20app-121a31?style=flat-square)
-![WebMCP tools](https://img.shields.io/badge/WebMCP-21%20goal--oriented%20tools-8876ff?style=flat-square)
+![WebMCP tools](https://img.shields.io/badge/WebMCP-22%20goal--oriented%20tools-8876ff?style=flat-square)
 ![Human control](https://img.shields.io/badge/human%20control-approval%20first-52dfc3?style=flat-square)
 
 ## Collaboration loop
@@ -36,9 +36,13 @@ The studio has two modes:
 - Selection-aware requests such as “make this metallic,” “move that left,” “make it bigger,” or “duplicate it.”
 - Live agent status: ready, thinking, waiting for approval, applying, or blocked by a permission.
 - A readable proposal card with planned steps, a visual diff (`+ forms`, `~ refinements`, `− removals`), reasons, and **Approve / Modify / Reject** controls.
-- Every approved run is one auditable and reversible transaction. Humans can **Keep changes** or **Undo agent run**.
-- An activity timeline records human and agent actions with timestamp and reason.
-- Agent permissions for scene reading, creation, modification, deletion, and export. Destructive/export actions are staged and permission-gated.
+- **Granular proposal scope:** every operation has its own toggle. A human can keep the body while excluding fins, camera, or any other individual component before applying the selected subset.
+- **Live incremental builds:** selected operations stream into the Three.js canvas one at a time, with a canvas build overlay, per-step status, timeline events, and a safe **Interrupt run** control.
+- Every completed (or interrupted partial) run is one auditable and reversible transaction. Humans can **Keep changes** or **Undo agent run**.
+- Object-level edit locks prevent a human viewport drag, inspector update, delete, duplicate, or snap action from racing the agent while it modifies that same form. The outline and inspector visibly mark the temporary lock.
+- The live selection relay updates whenever the human changes selection; local intent parsing uses that selection automatically, integrations receive a `webmcp-selection-context` browser event, compatible native bridges receive context updates, and every tool result includes `live_context`.
+- Agent activity timeline records human and agent actions with timestamp and reason.
+- Explicit permission tiers for scene reading, creation, modification, deletion, export, and sharing. Direct mode can stream permitted create/modify runs, but destructive restore/delete plus export/share remain staged and approval-gated.
 
 ### Scene intelligence
 
@@ -48,7 +52,7 @@ The studio has two modes:
 - Deterministic scene statistics and world-space bounding boxes.
 - Constraint system with **symmetry** and **on-ground** guardrails.
 - Deterministic validation for constraints, potential structural intersections, symmetry, material variety, composition, and scene statistics.
-- Transparent, project-specific design review scores. The UI explicitly treats the score as a heuristic—not an objective benchmark.
+- Transparent, project-specific design review scores. Each clickable metric drills into the exact heuristic evidence (paired/unmatched objects, bounds, materials, or intersection pairs), and related findings can focus an implicated form in the canvas. The UI explicitly treats the score as a heuristic—not an objective benchmark.
 - Review-informed suggestions only stage safe automatic changes (for example, missing mirrored counterparts).
 
 ### Shared workspace controls
@@ -64,7 +68,7 @@ The studio has two modes:
 
 ## WebMCP tool strategy
 
-Orbit intentionally exposes **goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
+Orbit intentionally exposes **22 goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
 
 | Layer | Tool | Purpose |
 |---|---|---|
@@ -86,9 +90,10 @@ Orbit intentionally exposes **goal-oriented tools**, rather than turning every i
 | Versions | `list_versions` | Read checkpoint metadata |
 | Versions | `restore_version` | Stage a human-approved version restoration |
 | Control | `undo_agent_changes` | Revert the latest reversible agent batch |
+| Control | `interrupt_agent_run` | Safely stop a live streamed run at an operation boundary |
 | Collaboration | `add_comment` | Attach a contextual annotation to a form |
 | Sensitive action | `export_stl` | Stage a permission-gated STL export request |
-| Sharing | `share_scene` | Generate a local URL-encoded state link |
+| Sharing | `share_scene` | Stage a permission-gated local URL-encoded state link |
 
 When the browser supports `navigator.modelContext`, Orbit registers these tools with the native WebMCP bridge. In non-WebMCP browsers, the normal human UI still works and a small local bridge is available for development:
 
@@ -108,6 +113,18 @@ await window.webMCPStudio.callTool('get_scene');
 7. Human approves. The plan applies as one undoable batch.
 8. Human asks **“Review this scene.”**
 9. Agent calls `analyze_design` and `validate_scene`, explains the findings, and stages only safe improvements.
+
+## Agent workflow evaluation suite
+
+`evals/agent-workflows.json` contains 24 varied prompts with expected goal-level tool choice, key parameter extraction, approval state, and sensitive-action handling. `scripts/run-agent-evals.mjs` executes the dependency-free local intent router against that fixture.
+
+```bash
+npm run evals
+# or
+npm run check
+```
+
+The current suite covers scene reads, selection context, semantic search, reviews, validation, composite creation, selected-object material/color/scale edits, constraints, version restore, undo, annotations, interrupt handling, and sensitive export/share/clear flows. It reports task-routing success separately from syntax or HTTP checks.
 
 ## Run locally
 
