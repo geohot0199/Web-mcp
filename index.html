@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#090d1c">
-  <title>Orbit — WebMCP Co-design Studio</title>
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="Orbit is a monochrome WebMCP co-design studio: an agent inspects the scene, changes geometry and refines textures while you watch every edit land in the 3D viewport.">
+  <title>Orbit — WebMCP 3D Co-design Studio</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- OpenAI Sans is proprietary; Inter is the closest open fallback and matches its metrics. -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <div class="ambient ambient-violet"></div>
-  <div class="ambient ambient-mint"></div>
   <div class="grain" aria-hidden="true"></div>
 
   <div id="app" class="app-shell">
@@ -34,6 +34,9 @@
       </div>
 
       <div class="top-actions">
+        <button id="focus-viewport-btn" class="button button-quiet" type="button" aria-pressed="false" title="Give the viewport the full width (V)">
+          <span class="button-icon">▣</span> Viewport focus
+        </button>
         <button id="review-btn" class="button button-quiet" type="button">
           <span class="button-icon">✦</span> Design review
         </button>
@@ -121,20 +124,57 @@
               </div>
             </div>
 
+            <div class="transform-block">
+              <div class="property-title"><span>Geometry</span><small>resolution</small></div>
+              <div class="chip-row" id="detail-chips">
+                <button type="button" data-detail="low">Low poly</button>
+                <button type="button" data-detail="standard">Standard</button>
+                <button type="button" data-detail="high">High</button>
+              </div>
+              <div class="readout-row">
+                <span>Triangles</span><b id="object-triangles">0</b>
+              </div>
+            </div>
+
             <div class="material-block">
               <div class="property-title"><span>Finish</span><small>appearance</small></div>
               <div class="material-chips">
                 <button type="button" data-material="metal">Metal</button>
-                <button type="button" data-material="plastic">Soft</button>
+                <button type="button" data-material="plastic">Matte</button>
                 <button type="button" data-material="glass">Glass</button>
-                <button type="button" data-material="emissive">Glow</button>
+                <button type="button" data-material="wood">Grain</button>
+                <button type="button" data-material="emissive">Emissive</button>
               </div>
-              <div class="color-row" aria-label="Object color">
-                <button class="color-swatch swatch-violet" type="button" data-color="#8876ff" aria-label="Violet"></button>
-                <button class="color-swatch swatch-mint" type="button" data-color="#52dfc3" aria-label="Mint"></button>
-                <button class="color-swatch swatch-peach" type="button" data-color="#ff9c75" aria-label="Peach"></button>
-                <input id="object-color-input" type="color" value="#8876ff" aria-label="Choose a custom object color">
+              <div class="color-row" aria-label="Object value">
+                <button class="color-swatch" type="button" data-color="#111111" style="--swatch:#111111" aria-label="Ink"></button>
+                <button class="color-swatch" type="button" data-color="#3d3d3d" style="--swatch:#3d3d3d" aria-label="Graphite"></button>
+                <button class="color-swatch" type="button" data-color="#8a8a8a" style="--swatch:#8a8a8a" aria-label="Grey"></button>
+                <button class="color-swatch" type="button" data-color="#c8c8c8" style="--swatch:#c8c8c8" aria-label="Silver"></button>
+                <button class="color-swatch" type="button" data-color="#fafafa" style="--swatch:#fafafa" aria-label="White"></button>
+                <input id="object-color-input" type="color" value="#9c9c9c" aria-label="Choose a custom object value">
               </div>
+            </div>
+
+            <div class="material-block">
+              <div class="property-title"><span>Texture</span><small>procedural</small></div>
+              <div class="chip-row" id="texture-chips">
+                <button type="button" data-texture="none">None</button>
+                <button type="button" data-texture="grid">Grid</button>
+                <button type="button" data-texture="brushed">Brushed</button>
+                <button type="button" data-texture="noise">Grain</button>
+                <button type="button" data-texture="checker">Checker</button>
+                <button type="button" data-texture="hatch">Hatch</button>
+                <button type="button" data-texture="dots">Dots</button>
+              </div>
+              <label class="slider-label">Texture scale <b id="texture-scale-value">1.0×</b>
+                <input id="texture-scale-input" class="slider" type="range" min="0.25" max="8" step="0.25" value="1">
+              </label>
+              <label class="slider-label">Roughness <b id="roughness-value">0.60</b>
+                <input id="roughness-input" class="slider" type="range" min="0" max="1" step="0.01" value="0.6">
+              </label>
+              <label class="slider-label">Metalness <b id="metalness-value">0.05</b>
+                <input id="metalness-input" class="slider" type="range" min="0" max="1" step="0.01" value="0.05">
+              </label>
             </div>
 
             <div class="inspector-actions">
@@ -188,8 +228,8 @@
             <div class="empty-orbit"><i></i><i></i><i></i></div>
             <div>
               <span class="eyebrow">Human + agent workspace</span>
-              <h1>Start with a vision,<br>then shape it together.</h1>
-              <p>Describe a design, approve the plan, and stay in control of every change.</p>
+              <h1>Inspect the scene.<br>Change geometry. Refine textures.</h1>
+              <p>The agent works through WebMCP on the same scene you do. Watch every edit land in this viewport, then steer the next one.</p>
               <button id="empty-start-btn" class="button button-primary" type="button">Design a delivery drone <span>↗</span></button>
             </div>
           </div>
@@ -294,7 +334,7 @@
                 <div class="message-avatar">✦</div>
                 <div class="message-bubble">
                   <span class="message-label">Orbit Agent</span>
-                  <p>I’ll turn your direction into a clear, reversible design plan. What are we building?</p>
+                  <p>I can inspect this scene, change its geometry and refine its textures through WebMCP. Every edit appears in the viewport as a reversible step you approve. What are we building?</p>
                 </div>
               </article>
             </div>
@@ -302,7 +342,9 @@
             <div class="quick-ideas">
               <span>Try an idea</span>
               <button type="button" data-prompt="Design a compact futuristic delivery drone">Delivery drone</button>
-              <button type="button" data-prompt="Create a symmetrical metallic rocket with four fins">Rocket</button>
+              <button type="button" data-prompt="Inspect this object">Inspect selection</button>
+              <button type="button" data-prompt="Make this low poly">Change geometry</button>
+              <button type="button" data-prompt="Give this a brushed metal texture">Refine texture</button>
               <button type="button" data-prompt="Review this scene and suggest improvements">Review scene</button>
             </div>
           </div>
@@ -386,6 +428,14 @@
 
   <div id="webmcp-toast" class="webmcp-toast" role="status" aria-live="polite"><span class="toast-dot"></span><span id="webmcp-toast-copy">Preparing studio…</span></div>
 
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/"
+      }
+    }
+  </script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

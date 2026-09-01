@@ -108,7 +108,7 @@
   },
   {
     "id": "selection-color",
-    "prompt": "Make this blue and metallic",
+    "prompt": "Make this charcoal and metallic",
     "context": {
       "selectedObject": {
         "id": "cube_17",
@@ -120,7 +120,7 @@
       "parameters": {
         "object_id": "cube_17",
         "patch": {
-          "color": "#8876ff",
+          "color": "#2b2b2b",
           "material": "metal"
         }
       },
@@ -368,6 +368,128 @@
         "persona": "Geometry engineer"
       },
       "approval": false
+    }
+  },
+  {
+    "id": "inspect-selection",
+    "prompt": "Inspect this object",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "inspect_object",
+      "parameters": {
+        "object_id": "cube_17"
+      },
+      "approval": false
+    }
+  },
+  {
+    "id": "list-surface-options",
+    "prompt": "What textures are available?",
+    "context": {},
+    "expected": {
+      "tool": "list_surface_options",
+      "parameters": {},
+      "approval": false
+    }
+  },
+  {
+    "id": "refine-texture-brushed",
+    "prompt": "Give this a brushed metal texture",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "refine_texture",
+      "parameters": {
+        "object_id": "cube_17",
+        "texture": "brushed",
+        "finish": "metal"
+      },
+      "approval": true
+    }
+  },
+  {
+    "id": "refine-texture-rough",
+    "prompt": "Make this surface rougher",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "refine_texture",
+      "parameters": {
+        "object_id": "cube_17",
+        "roughness": 0.85
+      },
+      "approval": true
+    }
+  },
+  {
+    "id": "geometry-low-poly",
+    "prompt": "Make this low poly",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "edit_geometry",
+      "parameters": {
+        "object_id": "cube_17",
+        "operation": "set_detail",
+        "detail": "low"
+      },
+      "approval": true
+    }
+  },
+  {
+    "id": "geometry-taller",
+    "prompt": "Make this taller",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "edit_geometry",
+      "parameters": {
+        "object_id": "cube_17",
+        "operation": "stretch",
+        "axis": "y",
+        "factor": 1.4
+      },
+      "approval": true
+    }
+  },
+  {
+    "id": "geometry-convert",
+    "prompt": "Convert this into a cylinder",
+    "context": {
+      "selectedObject": {
+        "id": "cube_17",
+        "name": "Cargo pod"
+      }
+    },
+    "expected": {
+      "tool": "edit_geometry",
+      "parameters": {
+        "object_id": "cube_17",
+        "operation": "set_type",
+        "type": "cylinder"
+      },
+      "approval": true
     }
   }
 ]

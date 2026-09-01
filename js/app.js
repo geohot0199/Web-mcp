@@ -1,7 +1,7 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/controls/OrbitControls.js';
-import { STLExporter } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/exporters/STLExporter.js';
-import { routePrompt } from './agent-router.js';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { routePrompt, extractRestoreTarget } from './agent-router.js';
 
 /*
  * Orbit is deliberately client-side: the visual studio and the WebMCP tools
@@ -87,17 +87,38 @@ const TYPE_SYMBOLS = { cube: '◇', sphere: '○', cylinder: '▤', cone: '△',
 const BASE_DIMENSIONS = {
   cube: [1, 1, 1], sphere: [1, 1, 1], cylinder: [1, 1, 1], cone: [1, 1, 1], torus: [1, .3, 1], plane: [1, .025, 1]
 };
+/*
+ * The studio is intentionally monochrome: every surface is described by value
+ * (light to dark) plus a finish, so agent edits read clearly in the viewport.
+ */
 const MATERIALS = {
-  metal: { label: 'Metal', color: '#9aa9d6', metalness: .88, roughness: .22 },
-  plastic: { label: 'Soft polymer', color: '#8876ff', metalness: .15, roughness: .48 },
-  glass: { label: 'Glass', color: '#8ccff5', metalness: .05, roughness: .08, transparent: true, opacity: .43 },
-  wood: { label: 'Wood', color: '#c79067', metalness: .04, roughness: .78 },
-  emissive: { label: 'Glow', color: '#52dfc3', metalness: .18, roughness: .23, emissive: true }
+  metal: { label: 'Metal', color: '#c8c8c8', metalness: .92, roughness: .21 },
+  plastic: { label: 'Matte', color: '#9c9c9c', metalness: .04, roughness: .62 },
+  glass: { label: 'Glass', color: '#e6e6e6', metalness: .02, roughness: .05, transparent: true, opacity: .34 },
+  wood: { label: 'Grain', color: '#8a8a8a', metalness: .02, roughness: .85 },
+  emissive: { label: 'Emissive', color: '#ffffff', metalness: .1, roughness: .3, emissive: true }
 };
+
+/*
+ * Procedural greyscale textures. They are generated on a 2D canvas so the studio has
+ * no binary assets, and every texture an agent applies is fully reproducible from state.
+ */
+const TEXTURES = {
+  none: { label: 'None' },
+  grid: { label: 'Grid' },
+  brushed: { label: 'Brushed' },
+  noise: { label: 'Grain' },
+  checker: { label: 'Checker' },
+  hatch: { label: 'Hatch' },
+  dots: { label: 'Dots' }
+};
+const TEXTURE_NAMES = Object.keys(TEXTURES);
+const DETAIL_LEVELS = { low: 'Low poly', standard: 'Standard', high: 'High' };
 const COLOR_WORDS = {
-  blue: '#8876ff', violet: '#8876ff', purple: '#8876ff', indigo: '#8876ff',
-  mint: '#52dfc3', teal: '#52dfc3', green: '#52dfc3', cyan: '#52dfc3',
-  orange: '#ff9c75', peach: '#ff9c75', coral: '#ff9c75'
+  black: '#111111', ink: '#111111', charcoal: '#2b2b2b', graphite: '#3d3d3d',
+  dark: '#3d3d3d', grey: '#8a8a8a', gray: '#8a8a8a', mid: '#8a8a8a',
+  steel: '#a5a5a5', silver: '#c8c8c8', light: '#d6d6d6', ash: '#d6d6d6',
+  chalk: '#efefef', white: '#fafafa', bone: '#efefef'
 };
 
 const state = {
@@ -130,6 +151,7 @@ let controls;
 let modelGroup;
 let selectionBox;
 let hoverBox;
+let viewportReady = false;
 let pointerDown = null;
 let dragState = null;
 let speechRecognition = null;
@@ -203,7 +225,29 @@ function normaliseObject(raw = {}) {
     scale: cleanVector(raw.scale, [1, 1, 1], { min: .05, max: 30 }),
     material: MATERIALS[raw.material] ? raw.material : 'plastic',
     color: validColor(raw.color) ? raw.color : defaultColor,
+    texture: TEXTURES[raw.texture] ? raw.texture : 'none',
+    textureScale: clamp(safeNumber(raw.textureScale, 1), .25, 8),
+    roughness: isNumber(raw.roughness) ? clamp(raw.roughness, 0, 1) : null,
+    metalness: isNumber(raw.metalness) ? clamp(raw.metalness, 0, 1) : null,
+    detail: DETAIL_LEVELS[raw.detail] ? raw.detail : 'standard',
     tags: Array.isArray(raw.tags) ? raw.tags.map((tag) => String(tag).slice(0, 32)).slice(0, 12) : []
+  };
+}
+
+/* A compact, agent-readable description of one object's surface treatment. */
+function materialSummary(object) {
+  const preset = MATERIALS[object.material] || MATERIALS.plastic;
+  return {
+    finish: object.material,
+    finish_label: preset.label,
+    color: object.color,
+    texture: object.texture,
+    texture_label: TEXTURES[object.texture]?.label || 'None',
+    texture_scale: Number(object.textureScale.toFixed(2)),
+    roughness: Number((isNumber(object.roughness) ? object.roughness : preset.roughness).toFixed(2)),
+    metalness: Number((isNumber(object.metalness) ? object.metalness : preset.metalness).toFixed(2)),
+    roughness_overridden: isNumber(object.roughness),
+    metalness_overridden: isNumber(object.metalness)
   };
 }
 
@@ -213,7 +257,10 @@ function snapshotScene() {
     selectedId: state.selectedId,
     constraints: state.constraints,
     comments: state.comments,
-    designContext: state.designContext
+    designContext: state.designContext,
+    // The active checkpoint pointer belongs to the scene snapshot so undo/redo and
+    // time-travel never leave a restored version marked active for a different scene.
+    currentVersionId: state.currentVersionId
   });
 }
 
@@ -224,12 +271,23 @@ function hydrateScene(snapshot) {
   state.constraints = Array.isArray(source.constraints) ? clone(source.constraints) : [];
   state.comments = Array.isArray(source.comments) ? clone(source.comments) : [];
   state.designContext = normaliseDesignContext(source.designContext);
+  if ('currentVersionId' in source) {
+    state.currentVersionId = state.versions.some((version) => version.id === source.currentVersionId) ? source.currentVersionId : null;
+  }
 }
 
 function serialisedScene() {
   const statistics = getSceneStatistics();
   return {
-    objects: clone(state.objects),
+    objects: state.objects.map((object) => ({
+      ...clone(object),
+      bounds: objectBounds(object),
+      material_summary: materialSummary(object),
+      triangle_estimate: estimateTriangles(object)
+    })),
+    available_textures: TEXTURE_NAMES,
+    available_finishes: Object.keys(MATERIALS),
+    available_detail_levels: Object.keys(DETAIL_LEVELS),
     selected_object_id: state.selectedId,
     constraints: clone(state.constraints),
     comments: clone(state.comments),
@@ -253,17 +311,64 @@ function persistWorkspace() {
   }
 }
 
-function loadPersistedProjectMemory() {
+function normaliseVersionRecord(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const snapshot = raw.snapshot;
+  if (!snapshot || !Array.isArray(snapshot.objects)) return null;
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : makeId('version'),
+    label: String(raw.label || 'Checkpoint').slice(0, 30),
+    createdAt: isNumber(raw.createdAt) ? raw.createdAt : Date.now(),
+    snapshot: {
+      objects: snapshot.objects.map(normaliseObject),
+      selectedId: typeof snapshot.selectedId === 'string' ? snapshot.selectedId : null,
+      constraints: Array.isArray(snapshot.constraints) ? clone(snapshot.constraints) : [],
+      comments: Array.isArray(snapshot.comments) ? clone(snapshot.comments) : [],
+      designContext: normaliseDesignContext(snapshot.designContext),
+      currentVersionId: typeof snapshot.currentVersionId === 'string' ? snapshot.currentVersionId : null
+    }
+  };
+}
+
+/*
+ * Restore the whole saved workspace — scene, checkpoints and project memory — so a
+ * reload does not silently discard locally saved work. Every field is re-validated
+ * because local storage is user-editable.
+ */
+function loadPersistedWorkspace() {
+  const outcome = { restoredScene: false, restoredMemory: false, versions: [], currentVersionId: null };
+  let saved = null;
   try {
-    const saved = JSON.parse(localStorage.getItem('orbit-webmcp-workspace-v2') || 'null');
-    const memory = saved?.scene?.designContext;
-    if (!memory) return false;
-    state.designContext = { ...state.designContext, ...normaliseDesignContext(memory), intent: state.designContext.intent };
-    return state.designContext.preferences.length > 0;
+    saved = JSON.parse(localStorage.getItem('orbit-webmcp-workspace-v2') || 'null');
   } catch (error) {
-    console.warn('Could not restore project memory:', error);
-    return false;
+    console.warn('Could not read the persisted workspace:', error);
+    return outcome;
   }
+  if (!saved || typeof saved !== 'object') return outcome;
+
+  const memory = saved.scene?.designContext;
+  if (memory) {
+    state.designContext = { ...state.designContext, ...normaliseDesignContext(memory), intent: state.designContext.intent };
+    outcome.restoredMemory = (state.designContext.preferences || []).length > 0;
+  }
+
+  outcome.versions = (Array.isArray(saved.versions) ? saved.versions : []).map(normaliseVersionRecord).filter(Boolean).slice(-12);
+
+  if (saved.scene && Array.isArray(saved.scene.objects) && saved.scene.objects.length) {
+    try {
+      state.versions = outcome.versions;
+      hydrateScene(saved.scene);
+      state.currentVersionId = outcome.versions.some((version) => version.id === saved.currentVersionId) ? saved.currentVersionId : state.currentVersionId;
+      outcome.currentVersionId = state.currentVersionId;
+      outcome.restoredScene = true;
+    } catch (error) {
+      console.warn('Could not restore the persisted scene:', error);
+      state.versions = [];
+      hydrateScene({});
+      outcome.restoredScene = false;
+    }
+  }
+  return outcome;
 }
 
 function savePreference(preference, source = 'human') {
@@ -281,6 +386,9 @@ function savePreference(preference, source = 'human') {
 function setProjectPersona(persona, source = 'human') {
   const allowed = ['Adaptive co-designer', 'Visual designer', 'Geometry engineer', 'Design reviewer'];
   const value = allowed.includes(persona) ? persona : 'Adaptive co-designer';
+  if (source === 'agent' && !state.permissions.modify) {
+    throw new Error('Modify permission is disabled; the project persona cannot be changed.');
+  }
   if (state.timeTravel.active) {
     setCanvasMessage('Return to the live scene before changing Orbit’s role');
     return value;
@@ -373,11 +481,150 @@ function redoLastChange() {
   return true;
 }
 
+const VIEWPORT = {
+  background: '#0c0c0c',
+  floor: 0x161616,
+  grid: 0x242424,
+  gridStrong: 0x3a3a3a,
+  selection: 0xffffff,
+  hover: 0x9a9a9a
+};
+
+/*
+ * Procedural greyscale texture generation. Textures are cached per pattern and repeat
+ * so repeated agent refinements do not allocate a new GPU texture on every frame.
+ */
+const textureCache = new Map();
+
+function drawTexturePattern(context, pattern, size) {
+  context.fillStyle = '#b4b4b4';
+  context.fillRect(0, 0, size, size);
+  if (pattern === 'grid') {
+    context.strokeStyle = '#5e5e5e';
+    context.lineWidth = size / 64;
+    for (let step = 0; step <= 8; step += 1) {
+      const offset = (step / 8) * size;
+      context.beginPath(); context.moveTo(offset, 0); context.lineTo(offset, size); context.stroke();
+      context.beginPath(); context.moveTo(0, offset); context.lineTo(size, offset); context.stroke();
+    }
+    return;
+  }
+  if (pattern === 'checker') {
+    context.fillStyle = '#6e6e6e';
+    for (let row = 0; row < 8; row += 1) {
+      for (let column = 0; column < 8; column += 1) {
+        if ((row + column) % 2 === 0) context.fillRect((column * size) / 8, (row * size) / 8, size / 8, size / 8);
+      }
+    }
+    return;
+  }
+  if (pattern === 'hatch') {
+    context.strokeStyle = '#666666';
+    context.lineWidth = size / 96;
+    for (let step = -size; step < size * 2; step += size / 14) {
+      context.beginPath(); context.moveTo(step, 0); context.lineTo(step + size, size); context.stroke();
+    }
+    return;
+  }
+  if (pattern === 'dots') {
+    context.fillStyle = '#6a6a6a';
+    for (let row = 0; row < 10; row += 1) {
+      for (let column = 0; column < 10; column += 1) {
+        context.beginPath();
+        context.arc(((column + .5) * size) / 10, ((row + .5) * size) / 10, size / 42, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    return;
+  }
+  if (pattern === 'brushed') {
+    for (let line = 0; line < size * 1.4; line += 1) {
+      const value = 150 + Math.round((Math.random() - .5) * 58);
+      context.strokeStyle = `rgb(${value},${value},${value})`;
+      context.lineWidth = 1;
+      const y = Math.random() * size;
+      context.beginPath(); context.moveTo(0, y); context.lineTo(size, y); context.stroke();
+    }
+    return;
+  }
+  if (pattern === 'noise') {
+    const image = context.getImageData(0, 0, size, size);
+    for (let index = 0; index < image.data.length; index += 4) {
+      const value = 130 + Math.round(Math.random() * 74);
+      image.data[index] = value;
+      image.data[index + 1] = value;
+      image.data[index + 2] = value;
+      image.data[index + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+  }
+}
+
+function getProceduralTexture(pattern, repeat = 1) {
+  if (!pattern || pattern === 'none' || !TEXTURES[pattern]) return null;
+  const key = `${pattern}@${repeat.toFixed(2)}`;
+  if (textureCache.has(key)) return textureCache.get(key);
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  drawTexturePattern(context, pattern, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeat, repeat);
+  texture.anisotropy = 8;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  textureCache.set(key, texture);
+  return texture;
+}
+
+function supportsWebGL() {
+  try {
+    const probe = document.createElement('canvas');
+    return Boolean(window.WebGLRenderingContext && (probe.getContext('webgl2') || probe.getContext('webgl')));
+  } catch (_) {
+    return false;
+  }
+}
+
+/*
+ * If WebGL is unavailable the studio must still be usable: the object list, inspector,
+ * history and every WebMCP tool keep working against the same state, only the
+ * rasterised viewport is replaced with an explanation.
+ */
+function showViewportFallback(message) {
+  viewportReady = false;
+  els.canvas.replaceChildren();
+  const panel = node('div', 'viewport-fallback');
+  panel.append(
+    node('strong', '', 'The 3D viewport is unavailable'),
+    node('p', '', message),
+    node('p', '', 'Scene state, the inspector, history and all WebMCP tools remain fully functional.')
+  );
+  els.canvas.append(panel);
+}
+
 /* Three.js canvas */
 function initThree() {
+  if (!supportsWebGL()) {
+    showViewportFallback('This browser did not provide a WebGL context.');
+    return;
+  }
+  try {
+    buildViewport();
+    viewportReady = true;
+  } catch (error) {
+    console.error('Could not initialise the 3D viewport:', error);
+    showViewportFallback(error.message || 'The renderer could not start.');
+  }
+}
+
+function buildViewport() {
   scene = new THREE.Scene();
-  scene.background = new THREE.Color('#090d1c');
-  scene.fog = new THREE.FogExp2('#090d1c', .034);
+  scene.background = new THREE.Color(VIEWPORT.background);
+  scene.fog = new THREE.FogExp2(VIEWPORT.background, .028);
 
   camera = new THREE.PerspectiveCamera(48, 1, .1, 100);
   camera.position.set(8.4, 6.4, 9.5);
@@ -399,46 +646,47 @@ function initThree() {
   controls.maxDistance = 32;
   controls.maxPolarAngle = Math.PI / 2.03;
 
-  const grid = new THREE.GridHelper(18, 18, 0x4c5685, 0x253252);
+  const grid = new THREE.GridHelper(18, 36, VIEWPORT.gridStrong, VIEWPORT.grid);
   grid.position.y = -.01;
   grid.material.transparent = true;
-  grid.material.opacity = .48;
+  grid.material.opacity = .42;
   scene.add(grid);
 
   const floor = new THREE.Mesh(
     new THREE.CircleGeometry(9.1, 64),
-    new THREE.MeshBasicMaterial({ color: 0x111a35, transparent: true, opacity: .26, depthWrite: false })
+    new THREE.MeshBasicMaterial({ color: VIEWPORT.floor, transparent: true, opacity: .5, depthWrite: false })
   );
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -.025;
   scene.add(floor);
 
-  const hemi = new THREE.HemisphereLight(0xcfd7ff, 0x101a32, 1.45);
-  scene.add(hemi);
-  const violetLight = new THREE.PointLight(0x8876ff, 17, 20, 2);
-  violetLight.position.set(-5.2, 7, 4.8);
-  scene.add(violetLight);
-  const mintLight = new THREE.PointLight(0x52dfc3, 11, 14, 2);
-  mintLight.position.set(5, 4.4, -3.5);
-  scene.add(mintLight);
-  const key = new THREE.DirectionalLight(0xffffff, 2.1);
+  // Neutral three-point studio lighting: no colour casts, so value reads honestly.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 1.15));
+  const key = new THREE.DirectionalLight(0xffffff, 2.4);
   key.position.set(4.4, 9.4, 5.6);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.normalBias = .02;
   scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, .75);
+  fill.position.set(-6.2, 4.2, 4.4);
+  scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 1.1);
+  rim.position.set(-2.4, 3.6, -7.4);
+  scene.add(rim);
 
   modelGroup = new THREE.Group();
   modelGroup.name = 'Collaborative model';
   scene.add(modelGroup);
 
-  selectionBox = new THREE.BoxHelper(undefined, 0x8876ff);
+  selectionBox = new THREE.BoxHelper(undefined, VIEWPORT.selection);
   selectionBox.material.transparent = true;
   selectionBox.material.opacity = .92;
   selectionBox.material.depthTest = false;
   selectionBox.visible = false;
   scene.add(selectionBox);
 
-  hoverBox = new THREE.BoxHelper(undefined, 0x52dfc3);
+  hoverBox = new THREE.BoxHelper(undefined, VIEWPORT.hover);
   hoverBox.material.transparent = true;
   hoverBox.material.opacity = .58;
   hoverBox.material.depthTest = false;
@@ -484,15 +732,26 @@ function disposeMesh(mesh) {
   else if (mesh.material) mesh.material.dispose();
 }
 
-function makeGeometry(type) {
+/*
+ * Geometry resolution is part of the editable model, so "make it low poly" is a real
+ * geometry change an agent can request and a human can see immediately.
+ */
+const DETAIL_FACTOR = { low: .34, standard: 1, high: 2 };
+
+function makeGeometry(type, detail = 'standard') {
+  const factor = DETAIL_FACTOR[detail] ?? 1;
+  const segments = (base, minimum = 3) => Math.max(minimum, Math.round(base * factor));
   switch (type) {
-    case 'sphere': return new THREE.SphereGeometry(.5, 36, 24);
-    case 'cylinder': return new THREE.CylinderGeometry(.5, .5, 1, 36);
-    case 'cone': return new THREE.ConeGeometry(.5, 1, 36);
-    case 'torus': return new THREE.TorusGeometry(.35, .14, 16, 36);
-    case 'plane': return new THREE.PlaneGeometry(1, 1);
+    case 'sphere': return new THREE.SphereGeometry(.5, segments(36, 4), segments(24, 3));
+    case 'cylinder': return new THREE.CylinderGeometry(.5, .5, 1, segments(36, 3));
+    case 'cone': return new THREE.ConeGeometry(.5, 1, segments(36, 3));
+    case 'torus': return new THREE.TorusGeometry(.35, .14, segments(16, 3), segments(36, 4));
+    case 'plane': return new THREE.PlaneGeometry(1, 1, segments(1, 1), segments(1, 1));
     case 'cube':
-    default: return new THREE.BoxGeometry(1, 1, 1, 1, 1, 1);
+    default: {
+      const divisions = detail === 'high' ? 4 : 1;
+      return new THREE.BoxGeometry(1, 1, 1, divisions, divisions, divisions);
+    }
   }
 }
 
@@ -500,14 +759,21 @@ function makeMaterial(object) {
   const preset = MATERIALS[object.material] || MATERIALS.plastic;
   const parameters = {
     color: new THREE.Color(validColor(object.color) ? object.color : preset.color),
-    metalness: preset.metalness,
-    roughness: preset.roughness,
+    metalness: isNumber(object.metalness) ? object.metalness : preset.metalness,
+    roughness: isNumber(object.roughness) ? object.roughness : preset.roughness,
     transparent: Boolean(preset.transparent),
     opacity: preset.opacity ?? 1
   };
+  const texture = getProceduralTexture(object.texture, object.textureScale);
+  if (texture) {
+    parameters.map = texture;
+    parameters.bumpMap = texture;
+    parameters.bumpScale = .05;
+    parameters.roughnessMap = texture;
+  }
   if (preset.emissive) {
     parameters.emissive = new THREE.Color(validColor(object.color) ? object.color : preset.color);
-    parameters.emissiveIntensity = .93;
+    parameters.emissiveIntensity = .8;
   }
   return new THREE.MeshStandardMaterial(parameters);
 }
@@ -520,7 +786,7 @@ function renderModel() {
     disposeMesh(child);
   }
   state.objects.forEach((object) => {
-    const mesh = new THREE.Mesh(makeGeometry(object.type), makeMaterial(object));
+    const mesh = new THREE.Mesh(makeGeometry(object.type, object.detail), makeMaterial(object));
     mesh.name = object.name;
     mesh.userData = { isModelObject: true, objectId: object.id };
     mesh.position.set(...object.position);
@@ -537,6 +803,7 @@ function renderModel() {
 }
 
 function raycastCanvas(event) {
+  if (!viewportReady) return null;
   const rect = renderer.domElement.getBoundingClientRect();
   const pointer = new THREE.Vector2(
     ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -548,7 +815,9 @@ function raycastCanvas(event) {
 }
 
 function objectHitFromPointer(event) {
-  const intersections = raycastCanvas(event).intersectObjects(modelGroup.children, false);
+  const raycaster = raycastCanvas(event);
+  if (!raycaster) return null;
+  const intersections = raycaster.intersectObjects(modelGroup.children, false);
   return intersections.length ? intersections[0].object : null;
 }
 
@@ -650,9 +919,11 @@ function getInteractionTarget(preferHover = false) {
 }
 
 function getLiveAgentContext() {
-  const selected = getSelectedObject();
-  const pointed = getHoveredObject();
+  const readable = state.permissions.read;
+  const selected = readable ? getSelectedObject() : null;
+  const pointed = readable ? getHoveredObject() : null;
   return {
+    read_permission: readable,
     selected_object: clone(selected),
     pointed_object: clone(pointed),
     gesture: pointed ? { type: 'pointing_at', object_id: pointed.id } : null,
@@ -787,6 +1058,7 @@ function updateCameraReadout() {
 }
 
 function resetView() {
+  if (!viewportReady) return;
   camera.position.set(8.4, 6.4, 9.5);
   controls.target.set(0, 1.2, 0);
   controls.update();
@@ -794,6 +1066,7 @@ function resetView() {
 }
 
 function focusScene() {
+  if (!viewportReady) return;
   if (!state.objects.length) {
     resetView();
     return;
@@ -890,6 +1163,26 @@ function renderInspector() {
   });
   $('#object-color-input').value = validColor(object.color) ? object.color : MATERIALS[object.material].color;
   $('#object-color-input').disabled = locked;
+
+  const surface = materialSummary(object);
+  $$('#texture-chips button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.texture === object.texture);
+    button.disabled = locked;
+  });
+  $$('#detail-chips button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.detail === object.detail);
+    button.disabled = locked;
+  });
+  $('#object-triangles').textContent = estimateTriangles(object).toLocaleString();
+  const setSlider = (selector, value, format) => {
+    const input = $(selector);
+    input.value = String(value);
+    input.disabled = locked || (selector === '#texture-scale-input' && object.texture === 'none');
+    $(`${selector}-value`.replace('-input-value', '-value')).textContent = format(value);
+  };
+  setSlider('#texture-scale-input', object.textureScale, (value) => `${value.toFixed(2)}×`);
+  setSlider('#roughness-input', surface.roughness, (value) => value.toFixed(2));
+  setSlider('#metalness-input', surface.metalness, (value) => value.toFixed(2));
   $('#duplicate-btn').disabled = locked;
   $('#delete-btn').disabled = locked;
 }
@@ -956,7 +1249,7 @@ function renderVersions() {
 
 function actionLabel(action) {
   if (action.kind === 'add') return `Add ${action.object.name || TYPE_LABELS[action.object.type] || 'form'}`;
-  if (action.kind === 'modify') return `Refine ${objectNameForId(action.objectId)}`;
+  if (action.kind === 'modify') return action.label || `Refine ${objectNameForId(action.objectId)}`;
   if (action.kind === 'delete') return `Remove ${objectNameForId(action.objectId)}`;
   if (action.kind === 'symmetrize') return 'Balance mirrored forms';
   if (action.kind === 'snap') return 'Snap selected forms to grid';
@@ -1301,18 +1594,35 @@ function createPrimitive(type, overrides = {}, source = 'human') {
   return created;
 }
 
-function patchObject(objectId, patch, source = 'human', label) {
-  const object = state.objects.find((candidate) => candidate.id === objectId);
-  if (!object) throw new Error(`Object ${objectId} was not found.`);
-  if (source === 'human' && !guardHumanEdit(objectId)) return object;
+/*
+ * Sanitise an incoming patch once, so a human inspector edit, an agent tool call and a
+ * streamed proposal operation can never diverge in what they are allowed to change.
+ */
+function sanitisePatch(object, patch = {}) {
   const cleanPatch = {};
   if (typeof patch.name === 'string' && patch.name.trim()) cleanPatch.name = patch.name.trim().slice(0, 48);
+  if (TYPES.includes(patch.type)) cleanPatch.type = patch.type;
   if (patch.position) cleanPatch.position = cleanVector(patch.position, object.position);
   if (patch.rotation) cleanPatch.rotation = cleanVector(patch.rotation, object.rotation, { min: -Math.PI * 8, max: Math.PI * 8 });
   if (patch.scale) cleanPatch.scale = cleanVector(patch.scale, object.scale, { min: .05, max: 30 });
   if (MATERIALS[patch.material]) cleanPatch.material = patch.material;
   if (validColor(patch.color)) cleanPatch.color = patch.color;
+  if (TEXTURES[patch.texture]) cleanPatch.texture = patch.texture;
+  if (isNumber(patch.textureScale)) cleanPatch.textureScale = clamp(patch.textureScale, .25, 8);
+  if (isNumber(patch.roughness)) cleanPatch.roughness = clamp(patch.roughness, 0, 1);
+  else if (patch.roughness === null) cleanPatch.roughness = null;
+  if (isNumber(patch.metalness)) cleanPatch.metalness = clamp(patch.metalness, 0, 1);
+  else if (patch.metalness === null) cleanPatch.metalness = null;
+  if (DETAIL_LEVELS[patch.detail]) cleanPatch.detail = patch.detail;
   if (Array.isArray(patch.tags)) cleanPatch.tags = patch.tags.map((tag) => String(tag).slice(0, 32)).slice(0, 12);
+  return cleanPatch;
+}
+
+function patchObject(objectId, patch, source = 'human', label) {
+  const object = state.objects.find((candidate) => candidate.id === objectId);
+  if (!object) throw new Error(`Object ${objectId} was not found.`);
+  if (source === 'human' && !guardHumanEdit(objectId)) return object;
+  const cleanPatch = sanitisePatch(object, patch);
 
   const result = applyMutation({ label: label || `Refined ${object.name}`, source, why: 'A form was refined in the shared scene.' }, () => Object.assign(object, cleanPatch));
   if (result.changed) addActivity(label || `Refined ${object.name}`, source === 'agent' ? 'Agent applied an approved targeted refinement.' : 'Human refined the selected form.', source);
@@ -1417,25 +1727,73 @@ function createVersion(label, source = 'human', announce = true) {
   return version;
 }
 
+function findVersionsByLabel(requested) {
+  const query = String(requested || '').trim().toLowerCase();
+  if (!query) return [];
+  const byId = state.versions.filter((version) => version.id.toLowerCase() === query);
+  if (byId.length) return byId;
+  const exact = state.versions.filter((version) => version.label.toLowerCase() === query);
+  if (exact.length) return exact;
+
+  // Fall back to distinguishing tokens only: "checkpoint 2" must not match "checkpoint 3".
+  const generic = new Set(['version', 'versions', 'checkpoint', 'checkpoints', 'save', 'saved', 'state', 'scene', 'my', 'the', 'a', 'to', 'back']);
+  const tokens = query.split(/\s+/).filter((token) => token && !generic.has(token));
+  if (!tokens.length) return [];
+  const scored = state.versions
+    .map((version) => {
+      const label = version.label.toLowerCase();
+      const hits = tokens.filter((token) => label.includes(token)).length;
+      return { version, hits };
+    })
+    .filter((candidate) => candidate.hits === tokens.length);
+  return scored.map((candidate) => candidate.version);
+}
+
 function requestRestoreVersion(id) {
   if (!guardHumanEdit()) return;
   const version = state.versions.find((candidate) => candidate.id === id);
   if (!version || version.id === state.currentVersionId) return;
   if (!window.confirm(`Restore “${version.label}”? Your current state stays in the undo history.`)) return;
-  const result = applyMutation({ label: `Restored ${version.label}`, source: 'human', why: 'The human collaborator chose a prior version.' }, () => hydrateScene(version.snapshot));
-  state.currentVersionId = version.id;
+  // The version pointer moves inside the transaction so undo restores it with the scene.
+  const result = applyMutation({ label: `Restored ${version.label}`, source: 'human', why: 'The human collaborator chose a prior version.' }, () => {
+    hydrateScene(version.snapshot);
+    state.currentVersionId = version.id;
+  });
   if (result.changed) addActivity(`Restored ${version.label}`, 'Human returned to a prior design branch.', 'human');
 }
 
 /* Diagnostics: deterministic scene reading for agents and humans */
+/*
+ * World-space axis-aligned bounds. Nominal half extents are transformed through the
+ * object's full rotation so rotated forms report correct intersections, ground checks
+ * and review scores instead of their unrotated footprint.
+ */
 function objectBounds(object) {
   const dimensions = BASE_DIMENSIONS[object.type] || BASE_DIMENSIONS.cube;
   const half = dimensions.map((dimension, index) => Math.abs(dimension * object.scale[index]) / 2);
+  const [rx, ry, rz] = object.rotation || [0, 0, 0];
+  const isRotated = Math.abs(rx) > 1e-6 || Math.abs(ry) > 1e-6 || Math.abs(rz) > 1e-6;
+
+  let extent = half;
+  if (isRotated) {
+    // Intrinsic XYZ rotation matrix, matching THREE.Euler's default order.
+    const [cx, sx] = [Math.cos(rx), Math.sin(rx)];
+    const [cy, sy] = [Math.cos(ry), Math.sin(ry)];
+    const [cz, sz] = [Math.cos(rz), Math.sin(rz)];
+    const m = [
+      [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
+      [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
+      [-sy, sx * cy, cx * cy]
+    ];
+    // For a box, the rotated AABB half extent is |M| * half.
+    extent = m.map((row) => row.reduce((total, value, index) => total + Math.abs(value) * half[index], 0));
+  }
+
   return {
-    min: object.position.map((value, index) => value - half[index]),
-    max: object.position.map((value, index) => value + half[index]),
+    min: object.position.map((value, index) => value - extent[index]),
+    max: object.position.map((value, index) => value + extent[index]),
     center: [...object.position],
-    size: half.map((value) => value * 2)
+    size: extent.map((value) => value * 2)
   };
 }
 
@@ -1517,6 +1875,13 @@ function findObjectsBySemanticQuery(query) {
   });
 }
 
+/* A cheap, deterministic triangle estimate so agents can reason about model weight. */
+function estimateTriangles(object) {
+  const factor = DETAIL_FACTOR[object.detail] ?? 1;
+  const base = { cube: 12, sphere: 1600, cylinder: 140, cone: 100, torus: 1100, plane: 2 }[object.type] ?? 12;
+  return Math.max(2, Math.round(base * (object.type === 'cube' ? (object.detail === 'high' ? 8 : 1) : factor * factor)));
+}
+
 function getSceneStatistics() {
   const bounds = calculateSceneBounds();
   const materials = [...new Set(state.objects.map((object) => object.material))];
@@ -1528,6 +1893,9 @@ function getSceneStatistics() {
     types: state.objects.reduce((result, object) => { result[object.type] = (result[object.type] || 0) + 1; return result; }, {}),
     material_count: materials.length,
     color_count: colors.length,
+    textures: state.objects.reduce((result, object) => { result[object.texture] = (result[object.texture] || 0) + 1; return result; }, {}),
+    detail_levels: state.objects.reduce((result, object) => { result[object.detail] = (result[object.detail] || 0) + 1; return result; }, {}),
+    triangle_estimate: state.objects.reduce((total, object) => total + estimateTriangles(object), 0),
     bounding_box: bounds,
     symmetry_score: symmetry.score,
     constraint_count: state.constraints.length,
@@ -1680,6 +2048,18 @@ function detectColor(text) {
   return Object.entries(COLOR_WORDS).find(([word]) => new RegExp(`\\b${word}\\b`).test(lower))?.[1] || null;
 }
 
+function detectTexture(text) {
+  const lower = String(text).toLowerCase();
+  if (/\bbrushed\b|\bbrush\b|streak/.test(lower)) return 'brushed';
+  if (/\bgrid\b|panel(?:ed|ling)?/.test(lower)) return 'grid';
+  if (/\bgrain(?:y)?\b|\bnoise\b|speckle/.test(lower)) return 'noise';
+  if (/\bchecker(?:ed|board)?\b/.test(lower)) return 'checker';
+  if (/\bhatch(?:ed|ing)?\b|diagonal lines/.test(lower)) return 'hatch';
+  if (/\bdot(?:s|ted)\b|perforat/.test(lower)) return 'dots';
+  if (/(?:remove|clear|no) (?:the )?texture|untextured|plain surface/.test(lower)) return 'none';
+  return null;
+}
+
 function detectStyle(text) {
   const lower = String(text).toLowerCase();
   if (/futur|sci[ -]?fi|cyber|space/.test(lower)) return 'Futuristic';
@@ -1798,6 +2178,22 @@ function selectedEditPlan(input) {
     title = `Recolor ${selected.name}`;
     description = `Apply a focused ${Object.entries(COLOR_WORDS).find(([, value]) => value === color)?.[0] || 'accent'} finish to the selected form.`;
   }
+  // Texture refinement vocabulary
+  const texture = detectTexture(lower);
+  if (texture) { patch.texture = texture; title = `Apply ${TEXTURES[texture].label.toLowerCase()} texture to ${selected.name}`; description = `Apply the procedural ${TEXTURES[texture].label.toLowerCase()} texture to the selected form.`; }
+  if (/\brough(?:er|en)?\b|\bmatte?\b|\bcoarse(?:r)?\b/.test(lower)) { patch.roughness = clamp((isNumber(selected.roughness) ? selected.roughness : MATERIALS[selected.material].roughness) + .25, 0, 1); title = `Roughen ${selected.name}`; }
+  if (/\bsmooth(?:er)?\b|\bpolish(?:ed)?\b|\bgloss(?:y)?\b|\bshin(?:y|ier)\b/.test(lower)) { patch.roughness = clamp((isNumber(selected.roughness) ? selected.roughness : MATERIALS[selected.material].roughness) - .28, 0, 1); title = `Polish ${selected.name}`; }
+  if (/\b(finer|tighter|smaller) (?:texture|pattern|grain)\b/.test(lower)) { patch.textureScale = clamp(selected.textureScale * 1.8, .25, 8); }
+  if (/\b(coarser|bigger|larger) (?:texture|pattern|grain)\b/.test(lower)) { patch.textureScale = clamp(selected.textureScale / 1.8, .25, 8); }
+  // Geometry resolution vocabulary
+  if (/low[ -]?poly|faceted|fewer (?:polygons|triangles)/.test(lower)) { patch.detail = 'low'; title = `Make ${selected.name} low poly`; }
+  if (/high[ -]?(?:poly|res)|denser mesh|more (?:polygons|triangles)|smoother mesh/.test(lower)) { patch.detail = 'high'; title = `Increase ${selected.name} mesh resolution`; }
+  if (/\btaller\b|stretch (?:it )?up/.test(lower)) { patch.scale = [selected.scale[0], Number((selected.scale[1] * 1.4).toFixed(2)), selected.scale[2]]; title = `Stretch ${selected.name} taller`; }
+  if (/\bwider\b|stretch (?:it )?(?:out|sideways)/.test(lower)) { patch.scale = [Number((selected.scale[0] * 1.4).toFixed(2)), selected.scale[1], selected.scale[2]]; title = `Widen ${selected.name}`; }
+  if (/\bflatter\b|squash|flatten/.test(lower)) { patch.scale = [selected.scale[0], Number((selected.scale[1] * .6).toFixed(2)), selected.scale[2]]; title = `Flatten ${selected.name}`; }
+  if (/\brotate\b|\bturn\b|\bspin\b/.test(lower)) { patch.rotation = [selected.rotation[0], selected.rotation[1] + Math.PI / 8, selected.rotation[2]]; title = `Rotate ${selected.name}`; }
+  const convertTo = TYPES.find((type) => new RegExp(`(?:into|to) an? ${type}`).test(lower));
+  if (convertTo && convertTo !== selected.type) { patch.type = convertTo; title = `Convert ${selected.name} to a ${convertTo}`; }
   if (/transparent|glass/.test(lower)) { patch.material = 'glass'; title = `Make ${selected.name} transparent`; }
   if (/glow|emissive|light/.test(lower)) { patch.material = 'emissive'; title = `Illuminate ${selected.name}`; }
   if (/metal|metallic|chrome/.test(lower) && !patch.material) { patch.material = 'metal'; title = `Make ${selected.name} metallic`; }
@@ -1963,13 +2359,7 @@ function executeAction(action) {
   if (action.kind === 'modify') {
     const object = state.objects.find((candidate) => candidate.id === action.objectId);
     if (!object) throw new Error(`Could not refine missing object ${action.objectId}.`);
-    const patch = action.patch || {};
-    if (patch.position) object.position = cleanVector(patch.position, object.position);
-    if (patch.rotation) object.rotation = cleanVector(patch.rotation, object.rotation, { min: -Math.PI * 8, max: Math.PI * 8 });
-    if (patch.scale) object.scale = cleanVector(patch.scale, object.scale, { min: .05, max: 30 });
-    if (typeof patch.name === 'string') object.name = patch.name.slice(0, 48);
-    if (MATERIALS[patch.material]) object.material = patch.material;
-    if (validColor(patch.color)) object.color = patch.color;
+    Object.assign(object, sanitisePatch(object, action.patch || {}));
     return;
   }
   if (action.kind === 'delete') {
@@ -2071,6 +2461,10 @@ function interruptActiveRun() {
 }
 
 async function executePendingProposal({ autoApproved = false } = {}) {
+  // Guard against a second execution starting while the first run is still streaming.
+  if (state.activeRun && !state.activeRun.finished) {
+    return { success: false, message: 'An agent run is already streaming into the scene.' };
+  }
   const proposal = state.pendingProposal;
   if (!proposal || proposal.status !== 'draft') return { success: false, message: 'There is no pending proposal to apply.' };
   const selectedActions = proposal.actions.filter((action) => action.enabled !== false);
@@ -2107,6 +2501,11 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   for (let index = 0; index < selectedActions.length; index += 1) {
     const action = selectedActions[index];
     if (run.interrupted) break;
+    // Defensive: never keep mutating for a proposal that is no longer the active one.
+    if (state.pendingProposal !== proposal || state.activeRun !== run) {
+      run.interrupted = true;
+      break;
+    }
     action.status = 'running';
     updateBuildOverlay(proposal, action);
     renderProposal();
@@ -2179,12 +2578,13 @@ function discardDraftProposal() {
 
 function keepAppliedProposal() {
   const proposal = state.pendingProposal;
-  if (!proposal || proposal.status !== 'applied') return;
+  // Interrupted runs are a terminal state too — the "Keep partial run" control has to close them.
+  if (!proposal || !['applied', 'interrupted'].includes(proposal.status)) return;
   state.pendingProposal = null;
   renderProposal();
   updateSummary();
   setAgentStatus('ready', 'Run accepted', 'The shared scene is ready for the next collaborative step.');
-  addActivity(`Kept “${proposal.title}”`, 'Human accepted the completed agent run.', 'human');
+  addActivity(`Kept “${proposal.title}”`, proposal.status === 'interrupted' ? 'Human accepted the partial agent run.' : 'Human accepted the completed agent run.', 'human');
 }
 
 function revertLastAgentRun() {
@@ -2381,10 +2781,17 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
     return;
   }
   if (routedIntent.tool === 'restore_version') {
-    const requestWords = lower.split(/\s+/);
-    const version = state.versions.find((candidate) => requestWords.some((word) => candidate.label.toLowerCase().includes(word)) && candidate.id !== state.currentVersionId);
-    if (!version) {
-      addMessage('agent', 'I need a specific saved checkpoint to restore. Choose one from the version rail, or name the checkpoint in your request.');
+    const requested = routedIntent.parameters?.version_label || extractRestoreTarget(request);
+    const matches = findVersionsByLabel(requested);
+    if (matches.length !== 1) {
+      addMessage('agent', matches.length > 1
+        ? `“${requested}” matches ${matches.length} checkpoints (${matches.map((candidate) => candidate.label).join(', ')}). Name one exactly, or pick it from the version rail.`
+        : 'I need a specific saved checkpoint to restore. Choose one from the version rail, or name the checkpoint exactly in your request.');
+      return;
+    }
+    const version = matches[0];
+    if (version.id === state.currentVersionId) {
+      addMessage('agent', `“${version.label}” is already the active checkpoint, so there is nothing to restore.`);
       return;
     }
     stageProposal({ title: `Restore ${version.label}`, description: 'Return the complete shared scene to the selected saved checkpoint.', why: 'Version restoration changes the full scene, so it remains a visible approval step.', intent: request, style: state.designContext.style, actions: [{ kind: 'restore_version', versionId: version.id, versionLabel: version.label }] });
@@ -2431,7 +2838,11 @@ function registerTool(definition) {
         ? { success: false, message: 'Time-travel preview is read-only. Return to the live scene before mutating collaboration state.' }
         : await execute(args);
       addActivity(`Tool call · ${definition.name}`, summariseToolArgs(args), 'agent', { tool_call: { name: definition.name, args: clone(args) } });
-      return result && typeof result === 'object' ? { ...result, live_context: getLiveAgentContext() } : result;
+      if (!result || typeof result !== 'object') return result;
+      // Live context describes scene objects, so it must obey the human's Read permission
+      // and must never be attached to a call that was denied.
+      if (result.success === false) return result;
+      return { ...result, live_context: getLiveAgentContext() };
     }
   });
 }
@@ -2444,6 +2855,14 @@ function readAllowed() {
 function stageExternalPlan(plan) {
   const blockedRead = readAllowed();
   if (blockedRead) return blockedRead;
+  // A streamed run owns state.activeRun and state.pendingProposal. Replacing the proposal
+  // mid-run would disconnect the run's completion and undo controls from its mutations.
+  if (state.activeRun && !state.activeRun.finished) {
+    return { success: false, message: 'An approved agent run is still streaming into the scene. Wait for it to finish or interrupt it before proposing new changes.' };
+  }
+  if (state.pendingProposal && state.pendingProposal.status === 'applying') {
+    return { success: false, message: 'A proposal is currently being applied. Wait for it to finish before proposing new changes.' };
+  }
   const proposal = stageProposal(plan);
   return {
     success: true,
@@ -2457,6 +2876,65 @@ function stageExternalPlan(plan) {
       operations: proposal.actions.map((action) => ({ id: action.id, label: actionLabel(action), enabled: action.enabled !== false, status: action.status }))
     }
   };
+}
+
+/* Translate a high level geometry operation into a concrete, validated object patch. */
+function geometryPatch(object, args = {}) {
+  const axisIndex = { x: 0, y: 1, z: 2 }[String(args.axis || 'y').toLowerCase()] ?? 1;
+  switch (args.operation) {
+    case 'set_type': {
+      if (!TYPES.includes(args.type)) throw new Error(`Unknown primitive “${args.type}”. Available: ${TYPES.join(', ')}.`);
+      return { type: args.type };
+    }
+    case 'set_detail': {
+      if (!DETAIL_LEVELS[args.detail]) throw new Error(`Unknown detail level “${args.detail}”. Available: ${Object.keys(DETAIL_LEVELS).join(', ')}.`);
+      return { detail: args.detail };
+    }
+    case 'stretch': {
+      const factor = safeNumber(args.factor, 1.25);
+      if (factor <= 0) throw new Error('Stretch factor must be greater than zero.');
+      const scale = [...object.scale];
+      scale[axisIndex] = clamp(scale[axisIndex] * factor, .05, 30);
+      return { scale };
+    }
+    case 'scale': {
+      const factor = safeNumber(args.factor, 1.25);
+      if (factor <= 0) throw new Error('Scale factor must be greater than zero.');
+      return { scale: object.scale.map((value) => clamp(value * factor, .05, 30)) };
+    }
+    case 'rotate': {
+      const rotation = [...object.rotation];
+      rotation[axisIndex] += THREE.MathUtils.degToRad(safeNumber(args.degrees, 15));
+      return { rotation };
+    }
+    case 'move': {
+      const position = [...object.position];
+      position[axisIndex] += safeNumber(args.distance, 1);
+      return { position };
+    }
+    case 'drop_to_ground': {
+      const bounds = objectBounds(object);
+      const position = [...object.position];
+      position[1] -= bounds.min[1];
+      return { position };
+    }
+    default:
+      throw new Error(`Unsupported geometry operation “${args.operation}”.`);
+  }
+}
+
+function describeGeometryEdit(args = {}) {
+  const axis = String(args.axis || 'y').toUpperCase();
+  switch (args.operation) {
+    case 'set_type': return `Convert to ${TYPE_LABELS[args.type] || args.type}`;
+    case 'set_detail': return `Set ${String(DETAIL_LEVELS[args.detail] || args.detail).toLowerCase()} resolution`;
+    case 'stretch': return `Stretch ${axis} ×${safeNumber(args.factor, 1.25).toFixed(2)}`;
+    case 'scale': return `Scale ×${safeNumber(args.factor, 1.25).toFixed(2)}`;
+    case 'rotate': return `Rotate ${axis} ${Math.round(safeNumber(args.degrees, 15))}°`;
+    case 'move': return `Move ${axis} ${safeNumber(args.distance, 1).toFixed(2)}`;
+    case 'drop_to_ground': return 'Drop to ground';
+    default: return 'Edit geometry';
+  }
 }
 
 function externalChangeToAction(change = {}) {
@@ -2508,7 +2986,7 @@ function defineTools() {
     name: 'get_preferences',
     description: 'Read persistent browser-local project preferences and the current Orbit project persona before suggesting a design direction.',
     parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => ({ success: true, preferences: clone(state.designContext.preferences || []), persona: state.designContext.persona, persistence: 'browser-local project memory' })
+    execute: async () => readAllowed() || ({ success: true, preferences: clone(state.designContext.preferences || []), persona: state.designContext.persona, persistence: 'browser-local project memory' })
   });
   registerTool({
     name: 'save_preference',
@@ -2536,7 +3014,11 @@ function defineTools() {
     name: 'set_project_persona',
     description: 'Set Orbit’s persistent browser-local collaboration role to Adaptive co-designer, Visual designer, Geometry engineer, or Design reviewer when the human explicitly requests it.',
     parameters: { type: 'object', properties: { persona: { type: 'string', enum: ['Adaptive co-designer', 'Visual designer', 'Geometry engineer', 'Design reviewer'] } }, required: ['persona'] },
-    execute: async ({ persona }) => ({ success: true, persona: setProjectPersona(persona, 'agent') })
+    execute: async ({ persona }) => {
+      if (!state.permissions.modify) return { success: false, message: 'Modify permission is disabled; the project persona cannot be changed.' };
+      try { return { success: true, persona: setProjectPersona(persona, 'agent') }; }
+      catch (error) { return { success: false, message: error.message }; }
+    }
   });
   registerTool({
     name: 'get_history',
@@ -2602,6 +3084,141 @@ function defineTools() {
       if (!state.objects.some((object) => object.id === object_id)) return { success: false, message: `Object ${object_id} was not found.` };
       return stageExternalPlan({ title: `Refine ${objectNameForId(object_id)}`, description: 'A focused update to the referenced shared object.', why: why || 'The requested object refinement is staged for human review.', intent: `Modify ${objectNameForId(object_id)}`, style: state.designContext.style, actions: [{ kind: 'modify', objectId: object_id, patch }] });
     }
+  });
+  /*
+   * Codex-style inspect → change geometry → refine texture loop. Each tool reads the
+   * live scene, stages exactly one visible operation, and returns the state the agent
+   * needs to steer the next change on the same scene.
+   */
+  registerTool({
+    name: 'inspect_object',
+    description: 'Inspect one object in depth: geometry type, resolution, transform, world bounds, resolved surface treatment, triangle estimate, annotations and nearby objects. Call this before changing geometry or textures.',
+    parameters: { type: 'object', properties: { object_id: { type: 'string', description: 'Object id. Defaults to the human’s current selection.' } }, required: [] },
+    execute: async ({ object_id } = {}) => {
+      const denied = readAllowed(); if (denied) return denied;
+      const object = state.objects.find((candidate) => candidate.id === (object_id || state.selectedId));
+      if (!object) return { success: false, message: object_id ? `Object ${object_id} was not found.` : 'No object is selected. Pass object_id or ask the human to select a form.' };
+      const bounds = objectBounds(object);
+      const neighbours = state.objects
+        .filter((candidate) => candidate.id !== object.id)
+        .map((candidate) => ({ id: candidate.id, name: candidate.name, distance: Number(Math.hypot(...candidate.position.map((value, axis) => value - object.position[axis])).toFixed(2)) }))
+        .sort((first, second) => first.distance - second.distance)
+        .slice(0, 4);
+      return {
+        success: true,
+        object: clone(object),
+        geometry: {
+          type: object.type,
+          type_label: TYPE_LABELS[object.type],
+          detail: object.detail,
+          detail_label: DETAIL_LEVELS[object.detail],
+          triangle_estimate: estimateTriangles(object),
+          world_bounds: bounds,
+          world_size: bounds.size.map((value) => Number(value.toFixed(3))),
+          resting_on_ground: Math.abs(bounds.min[1]) < .05
+        },
+        surface: materialSummary(object),
+        annotations: state.comments.filter((comment) => comment.objectId === object.id).map(({ text, author, createdAt }) => ({ text, author, created_at: createdAt })),
+        nearest_objects: neighbours,
+        locked: isObjectLocked(object.id)
+      };
+    }
+  });
+  registerTool({
+    name: 'edit_geometry',
+    description: 'Change an object’s geometry: swap the primitive type, change mesh resolution, stretch one axis, scale uniformly, rotate in degrees, move in units, or drop it onto the ground plane. Operations are staged as a visible, reversible diff the human watches apply in the 3D viewport.',
+    parameters: {
+      type: 'object',
+      properties: {
+        object_id: { type: 'string', description: 'Defaults to the human’s current selection.' },
+        operation: { type: 'string', enum: ['set_type', 'set_detail', 'stretch', 'scale', 'rotate', 'move', 'drop_to_ground'] },
+        type: { type: 'string', enum: TYPES },
+        detail: { type: 'string', enum: Object.keys(DETAIL_LEVELS) },
+        axis: { type: 'string', enum: ['x', 'y', 'z'] },
+        factor: { type: 'number', description: 'Multiplier for stretch and scale.' },
+        degrees: { type: 'number', description: 'Rotation for the rotate operation.' },
+        distance: { type: 'number', description: 'Units for the move operation.' },
+        why: { type: 'string' }
+      },
+      required: ['operation']
+    },
+    execute: async (args = {}) => {
+      const denied = readAllowed(); if (denied) return denied;
+      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
+      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
+      let patch;
+      try { patch = geometryPatch(object, args); }
+      catch (error) { return { success: false, message: error.message }; }
+      return stageExternalPlan({
+        title: `${describeGeometryEdit(args)} · ${object.name}`,
+        description: 'A single geometry change to the referenced object.',
+        why: args.why || 'Geometry changes stay visible and reversible while the human watches them apply.',
+        intent: `Edit geometry of ${object.name}`,
+        style: state.designContext.style,
+        actions: [{ kind: 'modify', objectId: object.id, patch, label: `${describeGeometryEdit(args)} ${object.name}` }]
+      });
+    }
+  });
+  registerTool({
+    name: 'refine_texture',
+    description: 'Refine an object’s surface: apply a procedural texture pattern, change its scale, set the finish, adjust roughness or metalness, or set a greyscale value. Staged as a visible, reversible diff.',
+    parameters: {
+      type: 'object',
+      properties: {
+        object_id: { type: 'string', description: 'Defaults to the human’s current selection.' },
+        texture: { type: 'string', enum: TEXTURE_NAMES },
+        texture_scale: { type: 'number', minimum: .25, maximum: 8 },
+        finish: { type: 'string', enum: Object.keys(MATERIALS) },
+        roughness: { type: 'number', minimum: 0, maximum: 1 },
+        metalness: { type: 'number', minimum: 0, maximum: 1 },
+        color: { type: 'string', description: 'Hex value, monochrome by convention (for example #d6d6d6).' },
+        why: { type: 'string' }
+      },
+      required: []
+    },
+    execute: async (args = {}) => {
+      const denied = readAllowed(); if (denied) return denied;
+      const object = state.objects.find((candidate) => candidate.id === (args.object_id || state.selectedId));
+      if (!object) return { success: false, message: 'No target object. Pass object_id or ask the human to select a form.' };
+      const patch = {};
+      if (args.texture !== undefined) {
+        if (!TEXTURES[args.texture]) return { success: false, message: `Unknown texture “${args.texture}”. Available: ${TEXTURE_NAMES.join(', ')}.` };
+        patch.texture = args.texture;
+      }
+      if (args.texture_scale !== undefined) patch.textureScale = args.texture_scale;
+      if (args.finish !== undefined) {
+        if (!MATERIALS[args.finish]) return { success: false, message: `Unknown finish “${args.finish}”. Available: ${Object.keys(MATERIALS).join(', ')}.` };
+        patch.material = args.finish;
+      }
+      if (args.roughness !== undefined) patch.roughness = args.roughness;
+      if (args.metalness !== undefined) patch.metalness = args.metalness;
+      if (args.color !== undefined) {
+        if (!validColor(args.color)) return { success: false, message: 'Color must be a hex value such as #d6d6d6.' };
+        patch.color = args.color;
+      }
+      if (!Object.keys(patch).length) return { success: false, message: 'Provide at least one surface property to refine.' };
+      return stageExternalPlan({
+        title: `Refine surface · ${object.name}`,
+        description: 'A surface and texture refinement on the referenced object.',
+        why: args.why || 'Texture refinements stay visible and reversible while the human watches them apply.',
+        intent: `Refine the surface of ${object.name}`,
+        style: state.designContext.style,
+        actions: [{ kind: 'modify', objectId: object.id, patch, label: `Refine surface of ${object.name}` }]
+      });
+    }
+  });
+  registerTool({
+    name: 'list_surface_options',
+    description: 'List every procedural texture, finish and geometry resolution the studio supports, so a refinement can be planned against real options instead of guessed names.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    execute: async () => readAllowed() || ({
+      success: true,
+      textures: TEXTURE_NAMES.map((name) => ({ id: name, label: TEXTURES[name].label })),
+      finishes: Object.entries(MATERIALS).map(([id, preset]) => ({ id, label: preset.label, roughness: preset.roughness, metalness: preset.metalness })),
+      detail_levels: Object.entries(DETAIL_LEVELS).map(([id, label]) => ({ id, label })),
+      primitives: TYPES.map((type) => ({ id: type, label: TYPE_LABELS[type] })),
+      palette: 'Monochrome. Values run from #111111 to #fafafa.'
+    })
   });
   registerTool({
     name: 'apply_approved_proposal',
@@ -2743,12 +3360,16 @@ function exposeLocalBridge() {
       if (!tool) throw new Error(`Unknown WebMCP tool: ${name}`);
       return tool.execute(args);
     },
-    getScene: () => serialisedScene()
+    // The bridge is a convenience wrapper over the same tools, so it obeys the same
+    // human-controlled Read permission instead of exposing a privileged shortcut.
+    getScene: () => readAllowed() || { success: true, scene: serialisedScene() },
+    getSelectionContext: () => readAllowed() || { success: true, live_context: getLiveAgentContext() }
   });
 }
 
 /* Export and shared state */
 function exportSTL() {
+  if (!viewportReady) return { success: false, message: 'STL export needs the 3D viewport, which is unavailable in this browser.' };
   if (!state.objects.length) {
     setCanvasMessage('Add a form before exporting');
     return { success: false, message: 'Scene is empty.' };
@@ -2883,6 +3504,55 @@ function bindEvents() {
     const selected = getSelectedObject();
     if (selected) patchObject(selected.id, { color: event.target.value }, 'human', `Recolored ${selected.name}`);
   });
+  $$('#texture-chips button').forEach((button) => button.addEventListener('click', () => {
+    const selected = getSelectedObject();
+    if (selected) patchObject(selected.id, { texture: button.dataset.texture }, 'human', `Applied ${TEXTURES[button.dataset.texture].label.toLowerCase()} texture to ${selected.name}`);
+  }));
+  $$('#detail-chips button').forEach((button) => button.addEventListener('click', () => {
+    const selected = getSelectedObject();
+    if (selected) patchObject(selected.id, { detail: button.dataset.detail }, 'human', `Set ${DETAIL_LEVELS[button.dataset.detail].toLowerCase()} resolution on ${selected.name}`);
+  }));
+  /*
+   * Surface sliders preview live in the viewport while dragging, then rewind to the
+   * pre-drag value so the committed change lands as exactly one undoable history entry.
+   */
+  const bindSurfaceSlider = (selector, property, format, label) => {
+    const input = $(selector);
+    const readout = $(`${selector}-value`.replace('-input-value', '-value'));
+    let previewOrigin = null;
+    input.addEventListener('input', () => {
+      readout.textContent = format(Number(input.value));
+      const selected = getSelectedObject();
+      if (!selected || isObjectLocked(selected.id)) return;
+      if (previewOrigin === null) previewOrigin = { id: selected.id, value: selected[property] };
+      selected[property] = Number(input.value);
+      renderModel();
+    });
+    input.addEventListener('change', () => {
+      const selected = getSelectedObject();
+      if (!selected) { previewOrigin = null; return; }
+      const value = Number(input.value);
+      if (previewOrigin && previewOrigin.id === selected.id) selected[property] = previewOrigin.value;
+      previewOrigin = null;
+      patchObject(selected.id, { [property]: value }, 'human', `${label} on ${selected.name}`);
+    });
+  };
+  bindSurfaceSlider('#texture-scale-input', 'textureScale', (value) => `${value.toFixed(2)}×`, 'Adjusted texture scale');
+  bindSurfaceSlider('#roughness-input', 'roughness', (value) => value.toFixed(2), 'Adjusted roughness');
+  bindSurfaceSlider('#metalness-input', 'metalness', (value) => value.toFixed(2), 'Adjusted metalness');
+
+  /*
+   * The viewport is the primary surface, so it can take the full width on demand.
+   * Manual controls collapse away rather than competing with the model.
+   */
+  const focusViewportButton = $('#focus-viewport-btn');
+  const setViewportFocus = (active) => {
+    document.body.classList.toggle('viewport-focus', active);
+    focusViewportButton.setAttribute('aria-pressed', String(active));
+    focusViewportButton.classList.toggle('active', active);
+    setCanvasMessage(active ? 'Viewport focus on — manual panels hidden' : 'Manual panels restored');
+  };
+  focusViewportButton.addEventListener('click', () => setViewportFocus(!document.body.classList.contains('viewport-focus')));
 
   els.agentForm.addEventListener('submit', (event) => { event.preventDefault(); handleAgentRequest(els.agentInput.value); });
   els.voiceButton.addEventListener('click', toggleVoiceInput);
@@ -2963,6 +3633,7 @@ function bindEvents() {
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redoLastChange(); return; }
     if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); deleteSelected(); return; }
+    if (event.key.toLowerCase() === 'v' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); $('#focus-viewport-btn').click(); return; }
     const selected = getSelectedObject();
     if (!selected) return;
     const delta = event.shiftKey ? .5 : .15;
@@ -2980,25 +3651,38 @@ function bindEvents() {
 async function bootstrap() {
   initThree();
   bindEvents();
-  const restoredMemory = loadPersistedProjectMemory();
+  const restored = loadPersistedWorkspace();
   const rememberedPreferences = clone(state.designContext.preferences || []);
   const rememberedPersona = state.designContext.persona;
+  // An explicit share link is an intentional hand-off, so it wins over the local autosave.
   const loadedSharedScene = loadSharedSceneFromLocation();
-  if (loadedSharedScene && rememberedPreferences.length) {
-    state.designContext = normaliseDesignContext({ ...state.designContext, preferences: rememberedPreferences, persona: rememberedPersona });
+  if (loadedSharedScene) {
+    state.versions = [];
+    state.currentVersionId = null;
+    if (rememberedPreferences.length) {
+      state.designContext = normaliseDesignContext({ ...state.designContext, preferences: rememberedPreferences, persona: rememberedPersona });
+    }
   }
-  if (!loadedSharedScene) {
+  if (loadedSharedScene) {
+    createVersion('Shared start', 'system', false);
+  } else if (restored.restoredScene) {
+    if (!state.versions.length) createVersion('Restored session', 'system', false);
+    renderVersions();
+  } else {
     // A first checkpoint makes the empty start point recoverable, without pre-populating the human’s canvas.
     createVersion('Start', 'system', false);
-  } else {
-    createVersion('Shared start', 'system', false);
   }
   defineTools();
   exposeLocalBridge();
   refreshUI({ scene: true });
   publishSelectionContext();
   initialiseVoiceInput();
-  addActivity('Studio ready', restoredMemory ? 'The human and agent now share the same scene state and remembered project preferences.' : 'The human and agent now share the same inspectable scene state.', 'agent');
+  const readyDetail = restored.restoredScene
+    ? `Restored your saved workspace: ${state.objects.length} object${state.objects.length === 1 ? '' : 's'} and ${state.versions.length} checkpoint${state.versions.length === 1 ? '' : 's'}.`
+    : restored.restoredMemory
+      ? 'The human and agent now share the same scene state and remembered project preferences.'
+      : 'The human and agent now share the same inspectable scene state.';
+  addActivity('Studio ready', readyDetail, 'agent');
   await registerWebMCPTools();
 }
 
