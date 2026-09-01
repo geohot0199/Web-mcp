@@ -1,0 +1,264 @@
+/* ============================
+   WebMCP 3D Modeling App — CSS
+   ============================ */
+:root {
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --success: #10b981;
+  --success-bg: #d1f9c3;
+  --error: #ef4444;
+  --error-bg: #fee2e2;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --action: #f59e0b;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: #1e293b;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* App Layout */
+#app {
+  display: flex;
+  flex-direction: column;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  width: 100%;
+}
+
+#canvas-container {
+  flex: 1;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+/* Collaboration Bar */
+.collab-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--card);
+  padding: 10px 16px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.collab-status {
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.accept-agent-btn,
+.reject-agent-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.accept-agent-btn {
+  background: var(--success);
+  color: white;
+  border: none;
+}
+
+.accept-agent-btn:hover {
+  background: var(--success-hover, #059669);
+}
+
+.reject-agent-btn {
+  background: var(--error);
+  color: white;
+  border: none;
+}
+
+.reject-agent-btn:hover {
+  background: #dc2626;
+}
+
+.accept-agent-btn.hidden, .reject-agent-btn.hidden {
+  display: none;
+}
+
+/* Right Panel */
+.panel {
+  background: var(--card);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  padding: 16px;
+  margin-bottom: 16px;
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.panel-section {
+  margin-bottom: 16px;
+}
+
+.panel-section:last-child { margin-bottom: 0; }
+
+.panel-section h3 {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.tool-btn {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.tool-btn:hover {
+  border-color: var(--primary);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.tool-btn:active {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+/* Bottom Panel */
+#bottom-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: stretch;
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.undo-redo {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.undo-btn,
+.redo-btn {
+  flex: 1;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.undo-btn:disabled, .redo-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.undo-btn:not(:disabled):hover, .redo-btn:not(:disabled):hover {
+  border-color: var(--primary);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.history-list {
+  height: 120px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-list button {
+  width: 100%;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: 2px;
+}
+
+.history-list button:hover {
+  background: rgba(0,0,0,0.03);
+  color: var(--primary);
+}
+
+/* Status Message */
+.webmcp-status {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--error-bg);
+  color: var(--error);
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  z-index: 100;
+  transition: background 0.3s;
+  border: 1px solid var(--error);
+}
+
+.webmcp-status.success {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  #app {
+    padding: 10px;
+  }
+
+  .panel, #bottom-panel {
+    width: 100%;
+    max-width: none;
+  }
+
+  .tool-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .collab-bar {
+    padding: 8px 12px;
+  }
+}
