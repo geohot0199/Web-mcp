@@ -5,7 +5,7 @@
 Orbit turns a browser-based 3D editor into a shared human–agent workflow. Instead of giving an agent a collection of blind UI clicks, the app gives it scene awareness, goal-level tools, visible proposals, deterministic reviews, and a clear approval boundary.
 
 ![No build step required](https://img.shields.io/badge/runtime-static%20browser%20app-121a31?style=flat-square)
-![WebMCP tools](https://img.shields.io/badge/WebMCP-22%20goal--oriented%20tools-8876ff?style=flat-square)
+![WebMCP tools](https://img.shields.io/badge/WebMCP-28%20goal--oriented%20tools-8876ff?style=flat-square)
 ![Human control](https://img.shields.io/badge/human%20control-approval%20first-52dfc3?style=flat-square)
 
 ## Collaboration loop
@@ -27,7 +27,7 @@ The studio has two modes:
 
 - Purpose-built dark 3D workspace using a focused three-accent visual system: **violet**, **mint**, and **peach**.
 - Motion design throughout: animated orbital brand mark, ambient color fields, pulsing agent state, live canvas HUD, proposal transitions, and responsive hover feedback.
-- Interactive Three.js canvas with orbit/zoom, object picking, selection bounds, grid, scene focus, reset view, and keyboard nudging.
+- Interactive Three.js canvas with orbit/zoom, object picking, selection bounds, grid, scene focus, reset view, keyboard nudging, and **Shift + drag** human repositioning.
 - Responsive desktop/tablet/mobile layouts with the canvas kept central to the workflow.
 
 ### Human + agent collaboration
@@ -41,7 +41,8 @@ The studio has two modes:
 - Every completed (or interrupted partial) run is one auditable and reversible transaction. Humans can **Keep changes** or **Undo agent run**.
 - Object-level edit locks prevent a human viewport drag, inspector update, delete, duplicate, or snap action from racing the agent while it modifies that same form. The outline and inspector visibly mark the temporary lock.
 - The live selection relay updates whenever the human changes selection; local intent parsing uses that selection automatically, integrations receive a `webmcp-selection-context` browser event, compatible native bridges receive context updates, and every tool result includes `live_context`.
-- Agent activity timeline records human and agent actions with timestamp and reason.
+- Agent activity timeline records human and agent actions with timestamp, parameters, and a restorable scene snapshot. A slider and event cards provide read-only **time-travel inspection** before returning to live editing.
+- Spatial hover grounding and optional browser voice input let a human point at a form and say “make that taller”; the target is passed as live gesture context.
 - Explicit permission tiers for scene reading, creation, modification, deletion, export, and sharing. Direct mode can stream permitted create/modify runs, but destructive restore/delete plus export/share remain staged and approval-gated.
 
 ### Scene intelligence
@@ -65,10 +66,11 @@ The studio has two modes:
 - Full shared-state undo/redo (`Ctrl/Cmd + Z`, `Ctrl/Cmd + Shift + Z`).
 - Local STL export from the currently visible model.
 - URL-safe `share_scene` state links that do not upload model data to a server.
+- Persistent browser-local project memory: saved preferences and an Adaptive / Designer / Engineer / Reviewer persona survive future local sessions.
 
 ## WebMCP tool strategy
 
-Orbit intentionally exposes **22 goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
+Orbit intentionally exposes **28 goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
 
 | Layer | Tool | Purpose |
 |---|---|---|
@@ -78,6 +80,12 @@ Orbit intentionally exposes **22 goal-oriented tools**, rather than turning ever
 | Read | `get_scene_statistics` | Concise counts, bounds, symmetry, colors, versions |
 | Read | `get_design_context` | Intent, style, constraints, and annotations |
 | Read | `get_history` | Auditable operations without exposing internal snapshots |
+| Read | `get_activity_timeline` | Tool-call timeline with timestamped scene-snapshot availability |
+| Read | `get_activity_snapshot` | Read a specific historical scene snapshot without changing live state |
+| Memory | `get_preferences` | Read browser-local project preferences and persona |
+| Memory | `save_preference` | Persist an explicit human-stated design preference |
+| Memory | `remove_preference` | Forget one explicit saved preference |
+| Memory | `set_project_persona` | Persist Adaptive, Designer, Engineer, or Reviewer role |
 | Plan | `propose_changes` | Stage a visible, non-mutating plan from high-level changes |
 | Plan | `create_composite_object` | Plan a named multipart object from primitive components |
 | Plan | `modify_object` | Stage one structured object refinement |
@@ -116,7 +124,7 @@ await window.webMCPStudio.callTool('get_scene');
 
 ## Agent workflow evaluation suite
 
-`evals/agent-workflows.json` contains 24 varied prompts with expected goal-level tool choice, key parameter extraction, approval state, and sensitive-action handling. `scripts/run-agent-evals.mjs` executes the dependency-free local intent router against that fixture.
+`evals/agent-workflows.json` contains 29 varied prompts with expected goal-level tool choice, key parameter extraction, approval state, and sensitive-action handling. `scripts/run-agent-evals.mjs` executes the dependency-free local intent router against that fixture.
 
 ```bash
 npm run evals
@@ -124,7 +132,7 @@ npm run evals
 npm run check
 ```
 
-The current suite covers scene reads, selection context, semantic search, reviews, validation, composite creation, selected-object material/color/scale edits, constraints, version restore, undo, annotations, interrupt handling, and sensitive export/share/clear flows. It reports task-routing success separately from syntax or HTTP checks.
+The current suite covers scene reads, selection/hover context, semantic search, reviews, validation, composite creation, selected-object material/color/scale edits, constraints, version restore, undo, annotations, interruption, time-travel routing, persistent preferences/personas, and sensitive export/share/clear flows. It reports task-routing success separately from syntax or HTTP checks.
 
 ## Run locally
 

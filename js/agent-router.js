@@ -20,6 +20,11 @@ export function routePrompt(prompt, context = {}) {
 
   if (/^(stop|pause|wait)\b/.test(lower)) return route('interrupt_agent_run', {}, { reason: 'The human is interrupting the active run.' });
   if (/\bundo\b|go back|revert/.test(lower)) return route('undo_agent_changes', {}, { reason: 'The human requested a reversible history action.' });
+  if (/what do you remember|show (?:my )?(?:preferences|memory)|my (?:preferences|memory)/.test(lower)) return route('get_preferences', {}, { reason: 'The human is asking about persistent project memory.' });
+  if (/act as|be (?:my )?(?:designer|engineer|reviewer)|switch (?:to )?(?:designer|engineer|reviewer)/.test(lower)) return route('set_project_persona', { persona: extractPersona(lower) }, { reason: 'The human explicitly selected a project collaboration role.' });
+  if (/\bforget\b|remove (?:my )?preference/.test(lower)) return route('remove_preference', { preference: extractPreference(text) }, { reason: 'The human is removing a persistent preference.' });
+  if (/\bremember\b|i (?:like|prefer)|always use|my style is/.test(lower)) return route('save_preference', { preference: extractPreference(text) }, { reason: 'The human is teaching Orbit a persistent project preference.' });
+  if (/activity timeline|agent timeline|what did (?:the )?agent do|show (?:the )?timeline|time travel/.test(lower)) return route('get_activity_timeline', {}, { reason: 'The human is asking to inspect decisions over time.' });
   if (/what(?: is|’s|')?(?: currently)? (?:in|on) (?:my |the )?scene|list (?:the )?objects|show (?:me )?(?:the )?scene/.test(lower)) return route('get_scene', {}, { reason: 'The request asks for complete scene state.' });
   if (/what is this|why did you (?:put|add|make)|selected object|what(?:’s| is) selected/.test(lower)) return route('get_selected_object', {}, { reason: 'The request is anchored to the human selection.' });
   if (/find |where (?:is|are) |front windows|left front wheel|glass objects/.test(lower)) return route('find_objects', { query: semanticQuery(text) }, { reason: 'The request names scene objects semantically.' });
@@ -86,4 +91,19 @@ function extractVersionName(text) {
 function extractCommentText(text) {
   const match = text.match(/(?:comment|note|annotation)\s*[:\-]?\s*(.+)$/i);
   return match?.[1]?.trim() || text;
+}
+
+function extractPersona(lower) {
+  if (/engineer/.test(lower)) return 'Geometry engineer';
+  if (/reviewer/.test(lower)) return 'Design reviewer';
+  if (/designer/.test(lower)) return 'Visual designer';
+  return 'Adaptive co-designer';
+}
+
+function extractPreference(text) {
+  return text
+    .replace(/^\s*(?:please\s+)?(?:remember(?:\s+that)?|forget(?:\s+that)?|remove(?:\s+my)?\s+preference(?:\s+for)?)\s*/i, '')
+    .replace(/^\s*(?:i\s+(?:like|prefer)|always\s+use|my\s+style\s+is)\s*/i, '')
+    .replace(/[.?!]+$/, '')
+    .trim() || 'low-poly, purposeful forms';
 }

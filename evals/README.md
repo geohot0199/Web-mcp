@@ -13,13 +13,13 @@ npm run evals
 
 ## Coverage
 
-`agent-workflows.json` currently has 24 cases spanning:
+`agent-workflows.json` currently has 29 cases spanning:
 
 - scene reading, selection context, and semantic search;
 - design review and deterministic validation;
 - composite rocket, drone, and robot creation;
 - primitive creation and selection-aware color, material, and scale edits;
-- constraints, checkpoints, restore, undo, annotations, and interruption; and
+- constraints, checkpoints, restore, undo, annotations, interruption, time-travel inspection, and persistent preferences/personas; and
 - sensitive clear, export, and share flows.
 
 A passing result means the local router chose the expected **goal-oriented tool**, extracted the expected key arguments, and marked the correct human approval / sensitive-action requirements. It does not claim to evaluate an external foundation model; native WebMCP agents can use the same tool schemas and safety boundaries.

@@ -207,6 +207,17 @@
             <small id="agent-build-count">0 / 0 operations</small>
           </div>
 
+          <div id="time-travel-overlay" class="time-travel-overlay hidden" aria-live="polite">
+            <span class="eyebrow">Time-travel preview</span>
+            <strong id="time-travel-overlay-title">Inspecting a past scene state</strong>
+            <small>Edits are paused until you return to live.</small>
+            <button id="exit-time-travel-canvas" type="button">Return to live ↗</button>
+          </div>
+
+          <div id="gesture-hud" class="gesture-hud" aria-live="polite">
+            <span>⌖</span><strong id="gesture-hud-name">Point at a form to ground “that”</strong>
+          </div>
+
           <div class="canvas-bottom-hud">
             <span><kbd>drag</kbd> orbit</span>
             <span><kbd>⇧ drag</kbd> move</span>
@@ -252,10 +263,23 @@
           </div>
         </div>
 
-        <div id="selection-context" class="selection-context" title="This context updates whenever the human changes the selection.">
+        <div id="selection-context" class="selection-context" title="This context updates whenever the human changes the selection or points at a form.">
           <span>Live selection relay</span>
           <strong id="selection-context-value">No object selected</strong>
           <small id="selection-context-revision">context v0</small>
+          <div class="memory-inline">
+            <span>Project memory</span>
+            <label class="persona-select-label">Role
+              <select id="persona-select" aria-label="Orbit project persona">
+                <option value="Adaptive co-designer">Adaptive</option>
+                <option value="Visual designer">Designer</option>
+                <option value="Geometry engineer">Engineer</option>
+                <option value="Design reviewer">Reviewer</option>
+              </select>
+            </label>
+            <div id="preference-chips" class="preference-chips"></div>
+            <button id="teach-agent-btn" type="button">Teach Orbit</button>
+          </div>
         </div>
 
         <div class="agent-tabs" role="tablist" aria-label="Collaboration views">
@@ -285,6 +309,11 @@
 
           <div id="activity-panel" class="agent-tab-panel hidden">
             <div class="activity-header"><span>Auditable action timeline</span><button id="clear-activity-btn" class="text-button" type="button">Clear</button></div>
+            <div class="timeline-scrubber">
+              <div><span>Time-travel inspector</span><button id="exit-time-travel-btn" class="text-button hidden" type="button">Return live</button></div>
+              <input id="time-travel-range" type="range" min="0" max="0" value="0" aria-label="Scrub agent and human activity timeline">
+              <p id="time-travel-caption">Select a timeline event to inspect its scene snapshot.</p>
+            </div>
             <div id="activity-list" class="activity-list"></div>
           </div>
         </div>
@@ -293,9 +322,10 @@
           <label class="composer-label" for="agent-input">Direct the agent</label>
           <div class="composer-row">
             <textarea id="agent-input" rows="2" maxlength="500" placeholder="e.g. Make the body more aerodynamic…"></textarea>
+            <button id="voice-agent-btn" class="voice-button" type="button" aria-label="Speak a direction to Orbit" title="Speak a direction to Orbit"><span>⌁</span></button>
             <button id="send-agent-btn" class="send-button" type="submit" aria-label="Send direction to agent"><span>↑</span></button>
           </div>
-          <div class="composer-footer"><span id="mode-hint">Planning mode — changes need your approval.</span><span>⌘ ↵</span></div>
+          <div class="composer-footer"><span id="mode-hint">Planning mode — changes need your approval.</span><span id="voice-status">⌁ Voice + hover grounding ready</span></div>
         </form>
       </aside>
     </main>
@@ -317,6 +347,12 @@
         <span>Current tier</span>
         <strong id="permission-tier-label">Guided creation</strong>
         <small id="permission-tier-copy">Orbit may prepare create and modify work; you approve every plan.</small>
+      </div>
+      <div class="permission-presets" role="group" aria-label="Quick agent permission tiers">
+        <span>Quick tiers</span>
+        <button type="button" data-permission-preset="observe">Observe</button>
+        <button type="button" data-permission-preset="guided">Guided</button>
+        <button type="button" data-permission-preset="full">Full*</button>
       </div>
       <div class="permission-list">
         <label class="permission-row"><span><strong>Read scene</strong><small>Inspect objects, context, and history</small></span><input type="checkbox" data-permission="read" checked><i></i></label>

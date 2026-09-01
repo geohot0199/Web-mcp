@@ -63,7 +63,20 @@ const els = {
   selectionContextValue: $('#selection-context-value'),
   selectionContextRevision: $('#selection-context-revision'),
   permissionTierLabel: $('#permission-tier-label'),
-  permissionTierCopy: $('#permission-tier-copy')
+  permissionTierCopy: $('#permission-tier-copy'),
+  timeTravelOverlay: $('#time-travel-overlay'),
+  timeTravelOverlayTitle: $('#time-travel-overlay-title'),
+  timeTravelRange: $('#time-travel-range'),
+  timeTravelCaption: $('#time-travel-caption'),
+  exitTimeTravelButton: $('#exit-time-travel-btn'),
+  exitTimeTravelCanvasButton: $('#exit-time-travel-canvas'),
+  gestureHud: $('#gesture-hud'),
+  gestureHudName: $('#gesture-hud-name'),
+  preferenceChips: $('#preference-chips'),
+  personaSelect: $('#persona-select'),
+  teachAgentButton: $('#teach-agent-btn'),
+  voiceButton: $('#voice-agent-btn'),
+  voiceStatus: $('#voice-status')
 };
 
 const TYPES = ['cube', 'sphere', 'cylinder', 'cone', 'torus', 'plane'];
@@ -90,9 +103,10 @@ const COLOR_WORDS = {
 const state = {
   objects: [],
   selectedId: null,
+  hoveredId: null,
   constraints: [],
   comments: [],
-  designContext: { intent: '', style: 'Exploratory', updatedAt: null, preferences: [] },
+  designContext: { intent: '', style: 'Exploratory', updatedAt: null, preferences: [], persona: 'Adaptive co-designer' },
   history: [],
   historyIndex: -1,
   versions: [],
@@ -102,7 +116,8 @@ const state = {
   activeRun: null,
   locks: {},
   selectionRevision: 0,
-  selectionContext: { selected_object: null, revision: 0, updated_at: null },
+  selectionContext: { selected_object: null, pointed_object: null, revision: 0, updated_at: null },
+  timeTravel: { active: false, eventId: null, liveSnapshot: null },
   activity: [],
   currentMode: 'planning',
   permissions: { read: true, create: true, modify: true, delete: false, export: false, share: false }
@@ -114,8 +129,11 @@ let renderer;
 let controls;
 let modelGroup;
 let selectionBox;
+let hoverBox;
 let pointerDown = null;
 let dragState = null;
+let speechRecognition = null;
+let hoverClearTimer;
 let toastTimer;
 let agentRequestNonce = 0;
 let currentReview = null;
@@ -163,6 +181,16 @@ function nextObjectName(type) {
   return `${TYPE_LABELS[type] || 'Object'} ${String(sequence).padStart(2, '0')}`;
 }
 
+function normaliseDesignContext(raw = {}) {
+  return {
+    intent: String(raw.intent || '').slice(0, 300),
+    style: String(raw.style || 'Exploratory').slice(0, 48),
+    updatedAt: raw.updatedAt || null,
+    preferences: Array.isArray(raw.preferences) ? [...new Set(raw.preferences.map((preference) => String(preference).trim().slice(0, 70)).filter(Boolean))].slice(0, 12) : [],
+    persona: String(raw.persona || 'Adaptive co-designer').slice(0, 48)
+  };
+}
+
 function normaliseObject(raw = {}) {
   const type = TYPES.includes(raw.type) ? raw.type : 'cube';
   const defaultColor = MATERIALS[raw.material]?.color || MATERIALS.plastic.color;
@@ -195,7 +223,7 @@ function hydrateScene(snapshot) {
   state.selectedId = state.objects.some((object) => object.id === source.selectedId) ? source.selectedId : null;
   state.constraints = Array.isArray(source.constraints) ? clone(source.constraints) : [];
   state.comments = Array.isArray(source.comments) ? clone(source.comments) : [];
-  state.designContext = source.designContext ? clone(source.designContext) : { intent: '', style: 'Exploratory', updatedAt: null, preferences: [] };
+  state.designContext = normaliseDesignContext(source.designContext);
 }
 
 function serialisedScene() {
@@ -223,6 +251,67 @@ function persistWorkspace() {
     // Storage is a convenience only. The editor remains fully functional without it.
     console.warn('Could not persist workspace:', error);
   }
+}
+
+function loadPersistedProjectMemory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('orbit-webmcp-workspace-v2') || 'null');
+    const memory = saved?.scene?.designContext;
+    if (!memory) return false;
+    state.designContext = { ...state.designContext, ...normaliseDesignContext(memory), intent: state.designContext.intent };
+    return state.designContext.preferences.length > 0;
+  } catch (error) {
+    console.warn('Could not restore project memory:', error);
+    return false;
+  }
+}
+
+function savePreference(preference, source = 'human') {
+  if (state.timeTravel.active) throw new Error('Return to the live scene before changing project memory.');
+  const clean = String(preference || '').trim().replace(/^remember\s+(?:that\s+)?/i, '').slice(0, 70);
+  if (!clean) throw new Error('Tell Orbit which preference to remember.');
+  const preferences = [...new Set([...(state.designContext.preferences || []), clean])].slice(-12);
+  state.designContext = normaliseDesignContext({ ...state.designContext, preferences, updatedAt: Date.now() });
+  persistWorkspace();
+  renderProjectMemory();
+  addActivity('Saved project preference', `Orbit will carry “${clean}” into future local planning sessions.`, source);
+  return clean;
+}
+
+function setProjectPersona(persona, source = 'human') {
+  const allowed = ['Adaptive co-designer', 'Visual designer', 'Geometry engineer', 'Design reviewer'];
+  const value = allowed.includes(persona) ? persona : 'Adaptive co-designer';
+  if (state.timeTravel.active) {
+    setCanvasMessage('Return to the live scene before changing Orbit’s role');
+    return value;
+  }
+  state.designContext = normaliseDesignContext({ ...state.designContext, persona: value, updatedAt: Date.now() });
+  persistWorkspace();
+  renderProjectMemory();
+  addActivity('Changed Orbit project persona', `${value} is now the persistent collaboration role.`, source);
+  return value;
+}
+
+function removePreference(preference) {
+  if (state.timeTravel.active) {
+    setCanvasMessage('Return to the live scene before changing project memory');
+    return;
+  }
+  state.designContext = normaliseDesignContext({ ...state.designContext, preferences: (state.designContext.preferences || []).filter((item) => item !== preference), updatedAt: Date.now() });
+  persistWorkspace();
+  renderProjectMemory();
+  addActivity('Forgot project preference', `Removed “${preference}” from local project memory.`, 'human');
+}
+
+function effectiveStyle(text) {
+  const explicit = detectStyle(text);
+  if (explicit !== 'Exploratory') return explicit;
+  const memory = (state.designContext.preferences || []).join(' ').toLowerCase();
+  if (/low[ -]?poly/.test(memory)) return 'Low-poly';
+  if (/futur|sci[ -]?fi/.test(memory)) return 'Futuristic';
+  if (/minimal|clean/.test(memory)) return 'Minimal';
+  if (/industrial|utility/.test(memory)) return 'Industrial';
+  return 'Exploratory';
 }
 
 function applyMutation(meta, mutate) {
@@ -349,6 +438,13 @@ function initThree() {
   selectionBox.visible = false;
   scene.add(selectionBox);
 
+  hoverBox = new THREE.BoxHelper(undefined, 0x52dfc3);
+  hoverBox.material.transparent = true;
+  hoverBox.material.opacity = .58;
+  hoverBox.material.depthTest = false;
+  hoverBox.visible = false;
+  scene.add(hoverBox);
+
   const resize = () => {
     const width = Math.max(1, els.canvas.clientWidth);
     const height = Math.max(1, els.canvas.clientHeight);
@@ -364,11 +460,18 @@ function initThree() {
   renderer.domElement.addEventListener('pointermove', moveCanvasPointer, { capture: true });
   renderer.domElement.addEventListener('pointerup', endCanvasPointer, { capture: true });
   renderer.domElement.addEventListener('pointercancel', endCanvasPointer, { capture: true });
+  renderer.domElement.addEventListener('pointerleave', () => {
+    // Keep the last pointing target briefly so a user can move from canvas to mic button
+    // and say “make that taller” without losing spatial grounding.
+    window.clearTimeout(hoverClearTimer);
+    hoverClearTimer = window.setTimeout(() => { if (!dragState) setHoveredObject(null); }, 4200);
+  });
 
   const animate = () => {
     requestAnimationFrame(animate);
     controls.update();
     if (selectionBox.visible) selectionBox.update();
+    if (hoverBox.visible) hoverBox.update();
     renderer.render(scene, camera);
     updateCameraReadout();
   };
@@ -429,6 +532,7 @@ function renderModel() {
     modelGroup.add(mesh);
   });
   updateSelectionVisual();
+  updateHoverVisual();
   publishSelectionContext();
 }
 
@@ -474,7 +578,11 @@ function beginCanvasPointer(event) {
 }
 
 function moveCanvasPointer(event) {
-  if (!dragState || event.pointerId !== dragState.pointerId) return;
+  if (!dragState) {
+    if (!pointerDown) setHoveredObject(objectHitFromPointer(event)?.userData?.objectId || null);
+    return;
+  }
+  if (event.pointerId !== dragState.pointerId) return;
   const target = new THREE.Vector3();
   if (!raycastCanvas(event).ray.intersectPlane(dragState.plane, target)) return;
   const object = state.objects.find((candidate) => candidate.id === dragState.id);
@@ -517,6 +625,7 @@ function selectObject(id) {
   renderObjectList();
   renderInspector();
   updateSelectionVisual();
+  updateHoverVisual();
   publishSelectionContext();
   if (state.selectedId) {
     const selected = getSelectedObject();
@@ -528,11 +637,28 @@ function getSelectedObject() {
   return state.objects.find((object) => object.id === state.selectedId) || null;
 }
 
+function getHoveredObject() {
+  return state.objects.find((object) => object.id === state.hoveredId) || null;
+}
+
+function getInteractionTarget(preferHover = false) {
+  // A deliberate click is normally strongest context. When the human says “that”,
+  // active spatial pointing wins so voice + hover feels naturally grounded.
+  const selected = getSelectedObject();
+  const hovered = getHoveredObject();
+  return preferHover ? (hovered || selected) : (selected || hovered);
+}
+
 function getLiveAgentContext() {
+  const selected = getSelectedObject();
+  const pointed = getHoveredObject();
   return {
-    selected_object: clone(getSelectedObject()),
+    selected_object: clone(selected),
+    pointed_object: clone(pointed),
+    gesture: pointed ? { type: 'pointing_at', object_id: pointed.id } : null,
     selection_revision: state.selectionRevision,
     selection_updated_at: state.selectionContext.updated_at,
+    timeline_preview_active: state.timeTravel.active,
     active_locks: Object.entries(state.locks).map(([objectId, lock]) => ({ object_id: objectId, ...lock })),
     pending_proposal_id: state.pendingProposal?.id || null,
     pending_proposal_status: state.pendingProposal?.status || null
@@ -541,15 +667,17 @@ function getLiveAgentContext() {
 
 function publishSelectionContext() {
   const selected = getSelectedObject();
+  const pointed = getHoveredObject();
   state.selectionRevision += 1;
   state.selectionContext = {
     selected_object: clone(selected),
+    pointed_object: clone(pointed),
     revision: state.selectionRevision,
     updated_at: Date.now()
   };
-  els.selectionContextValue.textContent = selected ? selected.name : 'No object selected';
+  els.selectionContextValue.textContent = selected ? selected.name : pointed ? `Pointing at ${pointed.name}` : 'No object selected';
   els.selectionContextRevision.textContent = `context v${state.selectionRevision}`;
-  els.selectionContext.classList.toggle('has-selection', Boolean(selected));
+  els.selectionContext.classList.toggle('has-selection', Boolean(selected || pointed));
 
   // Local and native integrations can subscribe instead of guessing whether a selection changed.
   const detail = getLiveAgentContext();
@@ -572,6 +700,11 @@ function describeLock(id) {
 }
 
 function guardHumanEdit(id) {
+  if (state.timeTravel.active) {
+    setCanvasMessage('Return to the live scene before editing');
+    showToast('Time-travel preview is read-only', 'error');
+    return false;
+  }
   // A streamed agent run is one atomic history transaction. Selection and comments remain live,
   // but model mutations wait for a safe boundary so unrelated human edits are never swallowed
   // into the agent batch.
@@ -607,6 +740,29 @@ function unlockRunObjects(runId) {
   Object.entries(state.locks).forEach(([id, lock]) => { if (lock.run_id === runId) delete state.locks[id]; });
   renderObjectList();
   renderInspector();
+}
+
+function setHoveredObject(id) {
+  window.clearTimeout(hoverClearTimer);
+  const nextId = state.objects.some((object) => object.id === id) ? id : null;
+  if (nextId === state.hoveredId) return;
+  state.hoveredId = nextId;
+  updateHoverVisual();
+  publishSelectionContext();
+}
+
+function updateHoverVisual() {
+  if (!hoverBox) return;
+  const hovered = getHoveredObject();
+  const mesh = hovered && modelGroup.children.find((child) => child.userData.objectId === hovered.id);
+  if (!mesh || hovered?.id === state.selectedId) {
+    hoverBox.visible = false;
+  } else {
+    hoverBox.setFromObject(mesh);
+    hoverBox.visible = true;
+  }
+  els.gestureHud.classList.toggle('active', Boolean(hovered));
+  els.gestureHudName.textContent = hovered ? `Pointing at ${hovered.name} · say “make that…”` : 'Point at a form to ground “that”';
 }
 
 function updateSelectionVisual() {
@@ -668,6 +824,7 @@ function refreshUI({ scene = false } = {}) {
   renderInspector();
   renderConstraints();
   renderComments();
+  renderProjectMemory();
   renderVersions();
   renderProposal();
   renderActivity();
@@ -762,6 +919,26 @@ function renderComments() {
     const item = node('article', 'comment-item');
     item.append(node('strong', '', comment.author || 'Human collaborator'), node('p', '', comment.text));
     els.commentList.append(item);
+  });
+}
+
+function renderProjectMemory() {
+  els.preferenceChips.replaceChildren();
+  els.personaSelect.value = state.designContext.persona || 'Adaptive co-designer';
+  els.personaSelect.disabled = state.timeTravel.active;
+  const preferences = state.designContext.preferences || [];
+  if (!preferences.length) {
+    els.preferenceChips.append(node('span', 'preference-empty', 'No saved preferences'));
+    return;
+  }
+  preferences.slice(-3).forEach((preference) => {
+    const chip = node('button', 'preference-chip');
+    chip.type = 'button';
+    chip.disabled = state.timeTravel.active;
+    chip.title = `Forget preference: ${preference}`;
+    chip.append(node('span', '', preference), node('i', '', '×'));
+    chip.addEventListener('click', () => removePreference(preference));
+    els.preferenceChips.append(chip);
   });
 }
 
@@ -909,15 +1086,68 @@ function renderProposal() {
   }
   els.proposalSlot.append(card);
 }
+function renderTimelineScrubber() {
+  const max = Math.max(0, state.activity.length - 1);
+  const activeIndex = state.timeTravel.active ? state.activity.findIndex((event) => event.id === state.timeTravel.eventId) : 0;
+  els.timeTravelRange.max = String(max);
+  els.timeTravelRange.value = String(Math.max(0, activeIndex));
+  els.timeTravelRange.disabled = !state.activity.length;
+  const inspected = state.timeTravel.active ? state.activity[activeIndex] : null;
+  els.timeTravelCaption.textContent = inspected
+    ? `Previewing ${new Date(inspected.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}: ${inspected.title}`
+    : state.activity.length ? 'Latest scene is live. Drag backward or select an event to inspect its snapshot.' : 'Select a timeline event to inspect its scene snapshot.';
+  els.exitTimeTravelButton.classList.toggle('hidden', !state.timeTravel.active);
+}
+
+function enterTimeTravel(index) {
+  if (state.activeRun) {
+    setCanvasMessage('Interrupt the live agent run before inspecting a historical state');
+    return;
+  }
+  const event = state.activity[index];
+  if (!event?.snapshot) {
+    setCanvasMessage('No scene snapshot was captured for that event');
+    return;
+  }
+  if (!state.timeTravel.active) state.timeTravel.liveSnapshot = snapshotScene();
+  hydrateScene(clone(event.snapshot));
+  state.timeTravel.active = true;
+  state.timeTravel.eventId = event.id;
+  state.hoveredId = null;
+  els.timeTravelOverlayTitle.textContent = `${new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${event.title}`;
+  els.timeTravelOverlay.classList.remove('hidden');
+  setAgentStatus('waiting', 'Inspecting a historical scene state', 'Edits are paused while time-travel preview is active.');
+  refreshUI({ scene: true });
+}
+
+function exitTimeTravel() {
+  if (!state.timeTravel.active || !state.timeTravel.liveSnapshot) return;
+  const liveSnapshot = state.timeTravel.liveSnapshot;
+  state.timeTravel = { active: false, eventId: null, liveSnapshot: null };
+  hydrateScene(liveSnapshot);
+  state.hoveredId = null;
+  els.timeTravelOverlay.classList.add('hidden');
+  setAgentStatus('ready', 'Returned to the live scene', 'You can edit, direct Orbit, or inspect another point in the timeline.');
+  refreshUI({ scene: true });
+  setCanvasMessage('Returned to the latest shared scene');
+}
+
 function renderActivity() {
   els.activityList.replaceChildren();
   els.activityCount.textContent = String(state.activity.length);
+  renderTimelineScrubber();
   if (!state.activity.length) {
     els.activityList.append(node('p', 'activity-empty', 'Every agent and human operation will appear here with its reason.'));
     return;
   }
-  state.activity.slice(0, 35).forEach((event) => {
-    const item = node('article', `activity-item ${event.source || ''}`);
+  state.activity.slice(0, 35).forEach((event, index) => {
+    const isActivePreview = state.timeTravel.active && state.timeTravel.eventId === event.id;
+    const item = node(event.snapshot ? 'button' : 'article', `activity-item ${event.source || ''}${event.snapshot ? ' previewable' : ''}${isActivePreview ? ' previewing' : ''}`);
+    if (event.snapshot) {
+      item.type = 'button';
+      item.title = 'Inspect this scene snapshot';
+      item.addEventListener('click', () => enterTimeTravel(index));
+    }
     item.append(node('i'));
     const copy = node('div');
     copy.append(node('strong', '', event.title), node('p', '', event.detail));
@@ -927,9 +1157,18 @@ function renderActivity() {
   });
 }
 
-function addActivity(title, detail, source = 'agent') {
-  state.activity.unshift({ id: makeId('event'), title, detail, source, timestamp: Date.now() });
-  if (state.activity.length > 60) state.activity.pop();
+function addActivity(title, detail, source = 'agent', metadata = {}) {
+  const snapshot = state.timeTravel.active ? null : snapshotScene();
+  state.activity.unshift({
+    id: makeId('event'),
+    title,
+    detail,
+    source,
+    timestamp: Date.now(),
+    snapshot,
+    tool_call: metadata.tool_call || null
+  });
+  if (state.activity.length > 80) state.activity.pop();
   renderActivity();
 }
 
@@ -983,6 +1222,53 @@ function showToast(message, type = 'success') {
   toastTimer = window.setTimeout(() => {
     els.toast.style.opacity = '.74';
   }, 4200);
+}
+
+function initialiseVoiceInput() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    els.voiceButton.disabled = true;
+    els.voiceStatus.textContent = '⌁ Hover grounding ready · voice unavailable here';
+    return;
+  }
+  speechRecognition = new Recognition();
+  speechRecognition.lang = navigator.language || 'en-IN';
+  speechRecognition.interimResults = true;
+  speechRecognition.continuous = false;
+  speechRecognition.onstart = () => {
+    els.voiceButton.classList.add('listening');
+    els.voiceStatus.textContent = '● Listening — point at a form, then speak';
+    setAgentStatus('thinking', 'Listening for your direction', 'Your pointer and selected form are retained as live spatial context.');
+  };
+  speechRecognition.onresult = (event) => {
+    const transcript = [...event.results].map((result) => result[0].transcript).join(' ').trim();
+    els.agentInput.value = transcript;
+    const isFinal = [...event.results].some((result) => result.isFinal);
+    if (isFinal && transcript) handleAgentRequest(transcript);
+  };
+  speechRecognition.onerror = (event) => {
+    const expectedAbort = event.error === 'aborted' || event.error === 'no-speech';
+    els.voiceStatus.textContent = expectedAbort ? '⌁ Voice cancelled · hover grounding ready' : `⌁ Voice input: ${event.error}`;
+    if (!expectedAbort) showToast(`Voice input error: ${event.error}`, 'error');
+  };
+  speechRecognition.onend = () => {
+    els.voiceButton.classList.remove('listening');
+    if (!els.voiceStatus.textContent.includes('error')) els.voiceStatus.textContent = '⌁ Voice + hover grounding ready';
+  };
+}
+
+function toggleVoiceInput() {
+  if (!speechRecognition) {
+    showToast('Voice recognition is not available in this browser', 'error');
+    return;
+  }
+  try {
+    if (els.voiceButton.classList.contains('listening')) speechRecognition.stop();
+    else speechRecognition.start();
+  } catch (_) {
+    // Calling start twice can throw in some Chromium builds; stopping is safest.
+    speechRecognition.stop();
+  }
 }
 
 /* Object creation and edits */
@@ -1466,7 +1752,7 @@ function robotPlan(input) {
     description: 'A compact robot built from readable primitives, with a glowing face and deliberately balanced arms.',
     why: 'The modular silhouette makes future human edits to its proportions simple and reversible.',
     intent: input,
-    style: detectStyle(input),
+    style: effectiveStyle(input),
     actions: [
       descriptor('cube', 'Robot torso', [0, 2.25, 0], [1.7, 1.8, .92], 'metal', color, ['body']),
       descriptor('cube', 'Robot head', [0, 3.85, 0], [1.3, 1.05, .92], 'plastic', color, ['body']),
@@ -1481,7 +1767,7 @@ function robotPlan(input) {
 
 function genericConceptPlan(input) {
   const color = detectColor(input) || '#8876ff';
-  const style = detectStyle(input);
+  const style = effectiveStyle(input);
   return {
     title: 'Starter concept study',
     description: 'A flexible three-form composition that gives us a body, a focal point, and an accent to refine together.',
@@ -1497,9 +1783,9 @@ function genericConceptPlan(input) {
 }
 
 function selectedEditPlan(input) {
-  const selected = getSelectedObject();
-  if (!selected) return null;
   const lower = input.toLowerCase();
+  const selected = getInteractionTarget(/\b(that|there|pointed)\b/.test(lower));
+  if (!selected) return null;
   const patch = {};
   let title = `Refine ${selected.name}`;
   let description = `A focused refinement to the currently selected ${selected.type}.`;
@@ -1526,10 +1812,10 @@ function selectedEditPlan(input) {
     copy.id = makeId('obj');
     copy.name = `${selected.name} variation`;
     copy.position = [selected.position[0] + .75, selected.position[1], selected.position[2] + .4];
-    return { title: `Create a variation of ${selected.name}`, description: 'A nearby duplicate lets you compare two directions side by side.', why: 'Variants help you keep the original while exploring an alternative.', intent: input, style: detectStyle(input), actions: [{ kind: 'add', object: copy }] };
+    return { title: `Create a variation of ${selected.name}`, description: 'A nearby duplicate lets you compare two directions side by side.', why: 'Variants help you keep the original while exploring an alternative.', intent: input, style: effectiveStyle(input), actions: [{ kind: 'add', object: copy }] };
   }
   if (!Object.keys(patch).length) return null;
-  return { title, description, why, intent: input, style: detectStyle(input), actions: [{ kind: 'modify', objectId: selected.id, patch }] };
+  return { title, description, why, intent: input, style: effectiveStyle(input), actions: [{ kind: 'modify', objectId: selected.id, patch }] };
 }
 
 function primitivePlan(input) {
@@ -1542,7 +1828,7 @@ function primitivePlan(input) {
     description: `Place a new ${match} in the active shared scene so you can refine it by hand or with Orbit.`,
     why: 'This is the smallest reversible step that matches your request.',
     intent: input,
-    style: detectStyle(input),
+    style: effectiveStyle(input),
     actions: [descriptor(match, nextObjectName(match), defaultPosition(match), [1, 1, 1], material, color || MATERIALS[material].color)]
   };
 }
@@ -1555,13 +1841,13 @@ function buildPlan(input) {
   if (/symmetr|mirror|balanced/.test(lower) && state.objects.length) {
     return {
       title: 'Balance the shared model', description: 'Inspect side forms and create only the missing mirrored counterparts.',
-      why: 'Symmetry is an explicit goal in your direction and is verified after the change.', intent: input, style: detectStyle(input), actions: [{ kind: 'symmetrize' }]
+      why: 'Symmetry is an explicit goal in your direction and is verified after the change.', intent: input, style: effectiveStyle(input), actions: [{ kind: 'symmetrize' }]
     };
   }
   if (/clear|delete everything|empty scene/.test(lower)) {
     return {
       title: 'Clear the shared scene', description: 'Remove all model forms and annotations. This destructive action remains reversible through history.',
-      why: 'You asked to begin again with an empty canvas.', intent: input, style: detectStyle(input), actions: state.objects.map((object) => ({ kind: 'delete', objectId: object.id }))
+      why: 'You asked to begin again with an empty canvas.', intent: input, style: effectiveStyle(input), actions: state.objects.map((object) => ({ kind: 'delete', objectId: object.id }))
     };
   }
   const selectedPlan = selectedEditPlan(input);
@@ -1631,7 +1917,7 @@ function stageProposal(plan) {
     description: String(plan.description || 'A set of reversible scene changes.').slice(0, 240),
     why: String(plan.why || '').slice(0, 240),
     intent: String(plan.intent || '').slice(0, 300),
-    style: plan.style || detectStyle(plan.intent || ''),
+    style: plan.style || effectiveStyle(plan.intent || ''),
     actions: clone(plan.actions || []).map((action, index) => ({
       ...action,
       id: action.id || `operation_${index + 1}_${makeId('step')}`,
@@ -1945,10 +2231,14 @@ function planFromReview() {
 async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   const request = String(text || '').trim();
   if (!request) return;
+  if (state.timeTravel.active) {
+    exitTimeTravel();
+    addMessage('agent', 'I returned to the live scene before interpreting your new direction.');
+  }
   const lower = request.toLowerCase();
   const nonce = ++agentRequestNonce;
   const liveContext = getLiveAgentContext();
-  const routedIntent = routePrompt(request, { selectedObject: getSelectedObject() });
+  const routedIntent = routePrompt(request, { selectedObject: getInteractionTarget(/\b(that|there|pointed)\b/.test(lower)) });
   els.agentInput.value = '';
   if (!alreadyLogged) addMessage('human', request);
   addActivity(`Intent routed to ${routedIntent.tool}`, routedIntent.reason || `Selection context v${liveContext.selection_revision} was attached automatically.`, 'agent');
@@ -1973,6 +2263,47 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   if (routedIntent.tool === 'undo_agent_changes') {
     if (state.pendingProposal?.status === 'applied' || state.pendingProposal?.status === 'interrupted') revertLastAgentRun();
     else undoLastChange();
+    return;
+  }
+  if (routedIntent.tool === 'save_preference') {
+    try {
+      const saved = savePreference(routedIntent.parameters.preference, 'human');
+      setAgentStatus('ready', 'Project preference saved', `I’ll carry “${saved}” into future local planning sessions.`);
+      addMessage('agent', `Saved “${saved}” to this browser’s project memory. You can remove it at any time by clicking the memory chip or saying “forget …”.`);
+    } catch (error) { addMessage('agent', error.message); }
+    return;
+  }
+  if (routedIntent.tool === 'get_preferences') {
+    const preferences = state.designContext.preferences || [];
+    setAgentStatus('ready', 'Project memory read', preferences.length ? `${preferences.length} saved design preference${preferences.length === 1 ? '' : 's'} active.` : 'No saved preferences yet.');
+    addMessage('agent', preferences.length ? `I remember: ${preferences.join('; ')}.` : 'I do not have saved project preferences yet. Say “Remember I prefer low-poly styles” to teach me.');
+    return;
+  }
+  if (routedIntent.tool === 'remove_preference') {
+    const requested = routedIntent.parameters.preference.toLowerCase();
+    const match = (state.designContext.preferences || []).find((preference) => preference.toLowerCase().includes(requested) || requested.includes(preference.toLowerCase()));
+    if (match) {
+      removePreference(match);
+      addMessage('agent', `Forgot “${match}” from the local project memory.`);
+    } else addMessage('agent', `I could not find “${routedIntent.parameters.preference}” in the saved project memory.`);
+    return;
+  }
+  if (routedIntent.tool === 'get_activity_timeline') {
+    $$('[data-agent-tab]').forEach((button) => {
+      const active = button.dataset.agentTab === 'activity';
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', String(active));
+    });
+    $('#plan-panel').classList.add('hidden');
+    $('#activity-panel').classList.remove('hidden');
+    setAgentStatus('ready', 'Timeline ready to inspect', `${state.activity.length} recorded human and agent event${state.activity.length === 1 ? '' : 's'} available.`);
+    addMessage('agent', 'I opened the activity timeline. Click any recorded event or scrub backward to inspect the exact scene snapshot from that moment; return to live before editing.');
+    return;
+  }
+  if (routedIntent.tool === 'set_project_persona') {
+    const persona = setProjectPersona(routedIntent.parameters.persona, 'human');
+    setAgentStatus('ready', 'Project persona updated', `Orbit is now collaborating as ${persona.toLowerCase()}.`);
+    addMessage('agent', `Understood. I’ll take the ${persona.toLowerCase()} role for this browser-local project until you change it.`);
     return;
   }
   if (routedIntent.tool === 'get_scene') {
@@ -2080,6 +2411,14 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
 }
 
 /* WebMCP tools: goal-oriented and state-aware instead of a long list of UI clicks */
+function summariseToolArgs(args) {
+  const entries = Object.entries(args || {}).slice(0, 3).map(([key, value]) => {
+    const compact = typeof value === 'string' ? value.slice(0, 36) : Array.isArray(value) ? `${value.length} item${value.length === 1 ? '' : 's'}` : typeof value === 'object' ? 'structured value' : String(value);
+    return `${key}: ${compact}`;
+  });
+  return entries.length ? entries.join(' · ') : 'no parameters';
+}
+
 function registerTool(definition) {
   const execute = definition.execute;
   toolRegistry.set(definition.name, {
@@ -2087,7 +2426,11 @@ function registerTool(definition) {
     // Every tool response carries the latest live selection/lock context. This avoids
     // forcing an agent to guess whether the human changed selection between turns.
     execute: async (args = {}) => {
-      const result = await execute(args);
+      const readOnlyDuringPreview = new Set(['get_scene', 'get_selected_object', 'find_objects', 'get_scene_statistics', 'get_design_context', 'get_preferences', 'get_history', 'validate_scene', 'analyze_design', 'list_constraints', 'list_versions', 'get_activity_timeline', 'get_activity_snapshot']);
+      const result = state.timeTravel.active && !readOnlyDuringPreview.has(definition.name)
+        ? { success: false, message: 'Time-travel preview is read-only. Return to the live scene before mutating collaboration state.' }
+        : await execute(args);
+      addActivity(`Tool call · ${definition.name}`, summariseToolArgs(args), 'agent', { tool_call: { name: definition.name, args: clone(args) } });
       return result && typeof result === 'object' ? { ...result, live_context: getLiveAgentContext() } : result;
     }
   });
@@ -2162,10 +2505,74 @@ function defineTools() {
     execute: async () => readAllowed() || { success: true, design_context: clone(state.designContext), constraints: clone(state.constraints), comments: clone(state.comments) }
   });
   registerTool({
+    name: 'get_preferences',
+    description: 'Read persistent browser-local project preferences and the current Orbit project persona before suggesting a design direction.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    execute: async () => ({ success: true, preferences: clone(state.designContext.preferences || []), persona: state.designContext.persona, persistence: 'browser-local project memory' })
+  });
+  registerTool({
+    name: 'save_preference',
+    description: 'Save an explicit human-stated design preference for future browser-local project sessions. Use only when the human asks to remember a preference.',
+    parameters: { type: 'object', properties: { preference: { type: 'string' } }, required: ['preference'] },
+    execute: async ({ preference }) => {
+      if (!state.permissions.modify) return { success: false, message: 'Modify permission is disabled; project memory cannot be changed.' };
+      try { return { success: true, saved_preference: savePreference(preference, 'agent'), preferences: clone(state.designContext.preferences) }; }
+      catch (error) { return { success: false, message: error.message }; }
+    }
+  });
+  registerTool({
+    name: 'remove_preference',
+    description: 'Remove one explicit browser-local project preference when the human asks to forget it.',
+    parameters: { type: 'object', properties: { preference: { type: 'string' } }, required: ['preference'] },
+    execute: async ({ preference }) => {
+      if (!state.permissions.modify) return { success: false, message: 'Modify permission is disabled; project memory cannot be changed.' };
+      const match = (state.designContext.preferences || []).find((item) => item.toLowerCase() === String(preference).toLowerCase());
+      if (!match) return { success: false, message: 'Preference was not found.' };
+      removePreference(match);
+      return { success: true, removed_preference: match, preferences: clone(state.designContext.preferences) };
+    }
+  });
+  registerTool({
+    name: 'set_project_persona',
+    description: 'Set Orbit’s persistent browser-local collaboration role to Adaptive co-designer, Visual designer, Geometry engineer, or Design reviewer when the human explicitly requests it.',
+    parameters: { type: 'object', properties: { persona: { type: 'string', enum: ['Adaptive co-designer', 'Visual designer', 'Geometry engineer', 'Design reviewer'] } }, required: ['persona'] },
+    execute: async ({ persona }) => ({ success: true, persona: setProjectPersona(persona, 'agent') })
+  });
+  registerTool({
     name: 'get_history',
     description: 'Read a concise, auditable history of human and agent scene changes. Snapshots are intentionally omitted from the tool result.',
     parameters: { type: 'object', properties: { limit: { type: 'number', minimum: 1, maximum: 50 } }, required: [] },
     execute: async ({ limit = 20 } = {}) => readAllowed() || ({ success: true, history: state.history.slice(Math.max(0, state.history.length - clamp(safeNumber(limit, 20), 1, 50))).map(({ id, label, source, why, runId, timestamp }) => ({ id, label, source, why, run_id: runId, timestamp })), active_history_index: state.historyIndex })
+  });
+  registerTool({
+    name: 'get_activity_timeline',
+    description: 'Read the auditable human-agent timeline, including tool calls and whether a scene snapshot is available for each event. Use it for time-travel debugging.',
+    parameters: { type: 'object', properties: { limit: { type: 'number', minimum: 1, maximum: 80 } }, required: [] },
+    execute: async ({ limit = 30 } = {}) => readAllowed() || ({
+      success: true,
+      timeline: state.activity.slice(0, clamp(safeNumber(limit, 30), 1, 80)).map((event) => ({
+        id: event.id,
+        title: event.title,
+        detail: event.detail,
+        source: event.source,
+        timestamp: event.timestamp,
+        tool_call: event.tool_call ? { name: event.tool_call.name } : null,
+        snapshot_available: Boolean(event.snapshot),
+        scene_summary: event.snapshot ? { object_count: event.snapshot.objects?.length || 0, selected_object_id: event.snapshot.selectedId || null, constraint_count: event.snapshot.constraints?.length || 0 } : null
+      }))
+    })
+  });
+  registerTool({
+    name: 'get_activity_snapshot',
+    description: 'Read the exact scene snapshot captured at one timeline event for debugging or comparison. This is read-only and does not alter the visible live scene.',
+    parameters: { type: 'object', properties: { event_id: { type: 'string' } }, required: ['event_id'] },
+    execute: async ({ event_id }) => {
+      const denied = readAllowed(); if (denied) return denied;
+      const event = state.activity.find((candidate) => candidate.id === event_id);
+      if (!event) return { success: false, message: 'Timeline event was not found.' };
+      if (!event.snapshot) return { success: false, message: 'This event does not include a scene snapshot.' };
+      return { success: true, event: { id: event.id, title: event.title, timestamp: event.timestamp, source: event.source }, scene_snapshot: clone(event.snapshot) };
+    }
   });
   registerTool({
     name: 'propose_changes',
@@ -2478,6 +2885,13 @@ function bindEvents() {
   });
 
   els.agentForm.addEventListener('submit', (event) => { event.preventDefault(); handleAgentRequest(els.agentInput.value); });
+  els.voiceButton.addEventListener('click', toggleVoiceInput);
+  els.personaSelect.addEventListener('change', () => setProjectPersona(els.personaSelect.value));
+  els.teachAgentButton.addEventListener('click', () => {
+    els.agentInput.focus();
+    els.agentInput.placeholder = 'e.g. Remember I prefer low-poly, mint-accented designs…';
+    setCanvasMessage('Teach Orbit a preference that persists in this browser');
+  });
   els.agentInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); handleAgentRequest(els.agentInput.value); }
   });
@@ -2500,9 +2914,32 @@ function bindEvents() {
     $('#plan-panel').classList.toggle('hidden', tab !== 'plan');
     $('#activity-panel').classList.toggle('hidden', tab !== 'activity');
   }));
-  $('#clear-activity-btn').addEventListener('click', () => { state.activity = []; renderActivity(); });
+  $('#clear-activity-btn').addEventListener('click', () => {
+    if (state.timeTravel.active) exitTimeTravel();
+    state.activity = [];
+    renderActivity();
+  });
+  els.timeTravelRange.addEventListener('input', (event) => {
+    const index = Number(event.target.value);
+    if (index === 0) exitTimeTravel(); else enterTimeTravel(index);
+  });
+  els.exitTimeTravelButton.addEventListener('click', exitTimeTravel);
+  els.exitTimeTravelCanvasButton.addEventListener('click', exitTimeTravel);
 
   $('#permissions-btn').addEventListener('click', () => openModal('permissions-modal'));
+  $$('[data-permission-preset]').forEach((button) => button.addEventListener('click', () => {
+    const presets = {
+      observe: { read: true, create: false, modify: false, delete: false, export: false, share: false },
+      guided: { read: true, create: true, modify: true, delete: false, export: false, share: false },
+      full: { read: true, create: true, modify: true, delete: true, export: true, share: true }
+    };
+    if (state.timeTravel.active) return setCanvasMessage('Return to the live scene before changing permissions');
+    Object.assign(state.permissions, presets[button.dataset.permissionPreset]);
+    $$('[data-permission]').forEach((input) => { input.checked = Boolean(state.permissions[input.dataset.permission]); });
+    renderPermissionTier();
+    persistWorkspace();
+    addActivity(`Applied ${button.textContent.replace('*', '')} permission tier`, 'Human updated Orbit’s collaboration boundaries. Sensitive actions still require approval.', 'human');
+  }));
   $$('[data-permission]').forEach((input) => {
     input.checked = Boolean(state.permissions[input.dataset.permission]);
     input.addEventListener('change', () => {
@@ -2543,7 +2980,13 @@ function bindEvents() {
 async function bootstrap() {
   initThree();
   bindEvents();
+  const restoredMemory = loadPersistedProjectMemory();
+  const rememberedPreferences = clone(state.designContext.preferences || []);
+  const rememberedPersona = state.designContext.persona;
   const loadedSharedScene = loadSharedSceneFromLocation();
+  if (loadedSharedScene && rememberedPreferences.length) {
+    state.designContext = normaliseDesignContext({ ...state.designContext, preferences: rememberedPreferences, persona: rememberedPersona });
+  }
   if (!loadedSharedScene) {
     // A first checkpoint makes the empty start point recoverable, without pre-populating the human’s canvas.
     createVersion('Start', 'system', false);
@@ -2554,7 +2997,8 @@ async function bootstrap() {
   exposeLocalBridge();
   refreshUI({ scene: true });
   publishSelectionContext();
-  addActivity('Studio ready', 'The human and agent now share the same inspectable scene state.', 'agent');
+  initialiseVoiceInput();
+  addActivity('Studio ready', restoredMemory ? 'The human and agent now share the same scene state and remembered project preferences.' : 'The human and agent now share the same inspectable scene state.', 'agent');
   await registerWebMCPTools();
 }
 
