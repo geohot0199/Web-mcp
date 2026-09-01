@@ -74,13 +74,23 @@ export function routePrompt(prompt, context = {}) {
   return route('propose_changes', { title: 'Starter concept study', changes: [{ operation: 'create', object: { type: 'cube' } }] }, { requiresHumanApproval: true, reason: 'A minimal reversible concept is safer than guessing a complex model.' });
 }
 
-/* The studio palette is monochrome, so colour words resolve to greyscale values. */
+/*
+ * Colour words resolve to hex values. Both greyscale and full-spectrum colours
+ * are supported so the AI and human can freely set any material colour.
+ */
 export function detectColor(text) {
   const map = {
     black: '#111111', ink: '#111111', charcoal: '#2b2b2b', graphite: '#3d3d3d',
     dark: '#3d3d3d', grey: '#8a8a8a', gray: '#8a8a8a', steel: '#a5a5a5',
     silver: '#c8c8c8', light: '#d6d6d6', ash: '#d6d6d6', chalk: '#efefef',
-    white: '#fafafa', bone: '#efefef'
+    white: '#fafafa', bone: '#efefef',
+    red: '#d94040', crimson: '#b02020', scarlet: '#cc2020',
+    orange: '#e87030', amber: '#d99020', coral: '#e87060',
+    yellow: '#d9c830', gold: '#c8a830', lemon: '#d9d940',
+    green: '#40a848', lime: '#60c840', emerald: '#30a060', forest: '#2a6830', mint: '#60c8a0', teal: '#30a0a0',
+    blue: '#3868d0', navy: '#203870', sky: '#60a8e0', azure: '#4080d0', cobalt: '#3050b0', cyan: '#40b8d0',
+    purple: '#7840c0', violet: '#8860d0', lavender: '#a888d8', indigo: '#4830a0', magenta: '#c040a0',
+    pink: '#e070a0', rose: '#d06080', peach: '#e0a080', brown: '#805030', tan: '#b09070'
   };
   const key = Object.keys(map).find((word) => new RegExp(`\\b${word}\\b`).test(text));
   return key ? map[key] : null;

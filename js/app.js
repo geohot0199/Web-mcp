@@ -120,9 +120,14 @@ const BASE_DIMENSIONS = {
  * The studio is intentionally monochrome: every surface is described by value
  * (light to dark) plus a finish, so agent edits read clearly in the viewport.
  */
+/*
+ * The default Blender-solid-grey (#808080) is the universal starting surface:
+ * both the AI and the human can change material and colour freely from here.
+ */
+const DEFAULT_OBJECT_COLOR = '#808080';
 const MATERIALS = {
   metal: { label: 'Metal', color: '#c8c8c8', metalness: .92, roughness: .21 },
-  plastic: { label: 'Matte', color: '#9c9c9c', metalness: .04, roughness: .62 },
+  plastic: { label: 'Matte', color: '#808080', metalness: .04, roughness: .62 },
   glass: { label: 'Glass', color: '#e6e6e6', metalness: .02, roughness: .05, transparent: true, opacity: .34 },
   wood: { label: 'Grain', color: '#8a8a8a', metalness: .02, roughness: .85 },
   emissive: { label: 'Emissive', color: '#ffffff', metalness: .1, roughness: .3, emissive: true }
@@ -147,7 +152,14 @@ const COLOR_WORDS = {
   black: '#111111', ink: '#111111', charcoal: '#2b2b2b', graphite: '#3d3d3d',
   dark: '#3d3d3d', grey: '#8a8a8a', gray: '#8a8a8a', mid: '#8a8a8a',
   steel: '#a5a5a5', silver: '#c8c8c8', light: '#d6d6d6', ash: '#d6d6d6',
-  chalk: '#efefef', white: '#fafafa', bone: '#efefef'
+  chalk: '#efefef', white: '#fafafa', bone: '#efefef',
+  red: '#d94040', crimson: '#b02020', scarlet: '#cc2020',
+  orange: '#e87030', amber: '#d99020', coral: '#e87060',
+  yellow: '#d9c830', gold: '#c8a830', lemon: '#d9d940',
+  green: '#40a848', lime: '#60c840', emerald: '#30a060', forest: '#2a6830', mint: '#60c8a0', teal: '#30a0a0',
+  blue: '#3868d0', navy: '#203870', sky: '#60a8e0', azure: '#4080d0', cobalt: '#3050b0', cyan: '#40b8d0',
+  purple: '#7840c0', violet: '#8860d0', lavender: '#a888d8', indigo: '#4830a0', magenta: '#c040a0',
+  pink: '#e070a0', rose: '#d06080', peach: '#e0a080', brown: '#805030', tan: '#b09070'
 };
 
 const state = {
@@ -2897,7 +2909,17 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   }
   if (refinePendingProposal(request)) return;
 
-  if (shouldUseLlmForTool(routedIntent.tool)) {
+  /*
+   * When a personal model is connected, the Orbit agent delegates any creative
+   * or mutation request to it — the model can freely choose primitives,
+   * materials, colours and textures to build whatever the user wants. The
+   * deterministic planner remains the safety fallback for read-only tools and
+   * for when the model fails or returns an empty plan.
+   */
+  const llmCreativeTools = new Set(['propose_changes', 'create_composite_object', 'modify_object', 'edit_geometry', 'refine_texture']);
+  const useLlm = isLlmConfigured(getLlmConfig()) && llmCreativeTools.has(routedIntent.tool);
+
+  if (useLlm) {
     const config = getLlmConfig();
     setAgentStatus('thinking', `Asking ${providerLabel(config.provider)}`, `Using ${config.model} to prepare a plan. The proposal still needs your approval.`);
     try {
@@ -3718,10 +3740,25 @@ function resetConversation() {
 }
 
 function performWipe() {
+  /*
+   * Cancel any in-flight work before clearing state. An active streamed run
+   * that survives the wipe could resume its delay loop and mutate the freshly
+   * reset scene, and an outstanding LLM request must not stage a proposal on
+   * a cleared canvas. Bumping the nonce invalidates every pending handler.
+   */
+  if (state.activeRun && !state.activeRun.finished) {
+    state.activeRun.interrupted = true;
+  }
+  state.activeRun = null;
+  state.pendingProposal = null;
+  state.lastAgentRun = null;
+  agentRequestNonce += 1;
+
   clearLlmConfig();
   els.llmApiKeyInput.value = '';
   els.agentInput.value = '';
   els.commentInput.value = '';
+  hideBuildOverlay();
   try {
     Object.keys(localStorage)
       .filter((key) => key.startsWith('orbit-'))
@@ -3776,9 +3813,24 @@ function armWipeButton() {
   }, 5000);
 }
 
-/* LLM-proposal bridge. The model only proposes; Orbit still stages and approves. */
+/*
+ * LLM-proposal bridge. When a personal model is connected, the Orbit agent
+ * delegates open-ended creative planning to it. The model proposes changes,
+ * but Orbit always stages, caps and gates the proposal through human approval.
+ * The LLM is used for any creative tool route — not just the two composite
+ * builders — so the model can freely set any material, colour, texture, and
+ * geometry the user asks for.
+ */
+const LLM_ENABLED_TOOLS = new Set([
+  'propose_changes',
+  'create_composite_object',
+  'modify_object',
+  'edit_geometry',
+  'refine_texture'
+]);
+
 function shouldUseLlmForTool(tool) {
-  return isLlmConfigured(getLlmConfig()) && ['propose_changes', 'create_composite_object'].includes(tool);
+  return isLlmConfigured(getLlmConfig()) && LLM_ENABLED_TOOLS.has(tool);
 }
 
 function parseLlmPlanJson(text) {
@@ -3798,8 +3850,16 @@ function parseLlmPlanJson(text) {
 
 function normaliseLlmPlan(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.actions)) return null;
+  /*
+   * Hard safety bound: the prompt instructs the model to stay under 14 steps,
+   * but untrusted output must be capped in code as well. Oversized plans are
+   * truncated deterministically rather than rejected wholesale, so a useful
+   * subset still reaches the human for approval.
+   */
+  const MAX_LLM_ACTIONS = 14;
+  const rawActions = raw.actions.slice(0, MAX_LLM_ACTIONS);
   const actions = [];
-  raw.actions.forEach((item) => {
+  rawActions.forEach((item) => {
     if (!item || typeof item !== 'object') return;
     if (item.kind === 'add' && item.object && TYPES.includes(item.object.type)) {
       actions.push({ kind: 'add', object: normaliseObject({ ...item.object, color: validColor(item.object.color) ? item.object.color : MATERIALS[item.object.material]?.color, tags: Array.isArray(item.object.tags) ? item.object.tags : [] }) });
@@ -3859,7 +3919,7 @@ function llmSystemPromptFor(liveContext) {
   const persona = state.designContext.persona || 'Adaptive co-designer';
   const preferences = (state.designContext.preferences || []).join('; ');
   return [
-    'You are the creative planner inside Orbit, a monochrome browser 3D co-design studio.',
+    'You are the creative planner inside Orbit, a browser 3D co-design studio.',
     'You never mutate anything yourself. You return a proposal in JSON only.',
     `Collaboration role: ${persona}. Current style direction: ${style}.`,
     `Remembered preferences: ${preferences || 'none yet'}.`,
@@ -3867,6 +3927,7 @@ function llmSystemPromptFor(liveContext) {
     'Available materials: metal, plastic, glass, wood, emissive.',
     'Available textures: none, grid, brushed, noise, checker, hatch, dots.',
     'Available detail levels: low, standard, high.',
+    'You can use ANY hex color (e.g. #ff0000, #00ff88, #808080). The user can freely change material and colour at any time.',
     'Return ONLY a JSON object shaped like this:',
     '{',
     '  "title": "...",',
@@ -3875,13 +3936,13 @@ function llmSystemPromptFor(liveContext) {
     '  "intent": "the human request",',
     '  "actions": [',
     '    {"kind":"add","object":{"type":"cylinder","name":"Body","position":[0,2,0],"scale":[1,2,1],"material":"metal","color":"#c8c8c8","texture":"brushed","textureScale":1,"detail":"standard","tags":["body"]}}',
-    '    or {"kind":"modify","objectId":"an existing id or $selected","patch":{"scale":[1.4,1.4,1.4]}}',
+    '    or {"kind":"modify","objectId":"an existing id or $selected","patch":{"scale":[1.4,1.4,1.4],"color":"#ff4444","material":"emissive"}}',
     '    or {"kind":"delete","objectId":"an existing id or $selected"}',
     '    or {"kind":"symmetrize"}',
     '    or {"kind":"add_constraint","constraint":{"type":"symmetry"}}',
     '  ]',
     '}',
-    'Keep proposals under 14 reversible steps. Never return export, share, restore_version, or any destructive server-side action. Every create should include a valid primitive type, material, texture, detail, and greyscale color.'
+    'Keep proposals under 14 reversible steps. Never return export, share, restore_version, or any destructive server-side action. Every create should include a valid primitive type, material, texture, detail, and hex color. You can set any color the user wants.'
   ].join('\n');
 }
 
