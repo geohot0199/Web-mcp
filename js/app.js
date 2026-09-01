@@ -3,18 +3,13 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { routePrompt, extractRestoreTarget } from './agent-router.js';
 import {
-  DEFAULT_PROVIDER,
-  defaultBaseUrlFor,
-  defaultModelFor,
-  getLlmConfig,
-  isLlmConfigured,
-  providerLabel,
-  setLlmConfig,
-  clearLlmConfig,
-  testLlmConnection,
-  chatCompletion,
-  validateLlmConfig
-} from './llm-provider.js';
+  connectOrbit,
+  disconnectOrbit,
+  getOrbitConnection,
+  isOrbitConnected,
+  orbitPlanningRequest,
+  testOrbitConnection
+} from './orbit-connection.js';
 
 /*
  * Orbit is deliberately client-side: the visual studio and the WebMCP tools
@@ -61,18 +56,14 @@ const els = {
   toastCopy: $('#webmcp-toast-copy'),
   footerStatus: $('#webmcp-footer-status'),
   permissionsModal: $('#permissions-modal'),
-  apiKeyButton: $('#api-key-btn'),
-  apiStatusCard: $('#api-status-card'),
-  apiStatusTitle: $('#api-status-title'),
-  apiStatusCopy: $('#api-status-copy'),
-  llmProviderSelect: $('#llm-provider-select'),
-  llmApiKeyInput: $('#llm-api-key-input'),
-  llmModelInput: $('#llm-model-input'),
-  llmBaseUrlInput: $('#llm-base-url-input'),
-  llmTestButton: $('#llm-test-btn'),
-  llmSaveButton: $('#llm-save-btn'),
-  llmRemoveButton: $('#llm-remove-btn'),
-  llmTestResult: $('#llm-test-result'),
+  orbitConnectionButton: $('#orbit-connection-btn'),
+  connectionStatusCard: $('#connection-status-card'),
+  connectionStatusTitle: $('#connection-status-title'),
+  connectionStatusCopy: $('#connection-status-copy'),
+  orbitTestButton: $('#orbit-test-btn'),
+  orbitConnectButton: $('#orbit-connect-btn'),
+  orbitDisconnectButton: $('#orbit-disconnect-btn'),
+  orbitTestResult: $('#orbit-test-result'),
   wipeAllButton: $('#wipe-all-btn'),
   reviewModal: $('#review-modal'),
   reviewScore: $('#review-score'),
@@ -2910,24 +2901,22 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   if (refinePendingProposal(request)) return;
 
   /*
-   * When a personal model is connected, the Orbit agent delegates any creative
-   * or mutation request to it — the model can freely choose primitives,
+   * When the Orbit connection is active, the Orbit agent delegates any creative
+   * or mutation request to it — the planning model can freely choose primitives,
    * materials, colours and textures to build whatever the user wants. The
    * deterministic planner remains the safety fallback for read-only tools and
-   * for when the model fails or returns an empty plan.
+   * for when the connection fails or returns an empty plan.
    */
-  const llmCreativeTools = new Set(['propose_changes', 'create_composite_object', 'modify_object', 'edit_geometry', 'refine_texture']);
-  const useLlm = isLlmConfigured(getLlmConfig()) && llmCreativeTools.has(routedIntent.tool);
+  const useOrbitConnection = shouldUseOrbitConnectionForTool(routedIntent.tool);
 
-  if (useLlm) {
-    const config = getLlmConfig();
-    setAgentStatus('thinking', `Asking ${providerLabel(config.provider)}`, `Using ${config.model} to prepare a plan. The proposal still needs your approval.`);
+  if (useOrbitConnection) {
+    setAgentStatus('thinking', 'Asking the Orbit connection', 'Preparing a plan through the Orbit connection. The proposal still needs your approval.');
     try {
-      const plan = await buildLlmPlan(request, liveContext);
+      const plan = await buildOrbitPlan(request, liveContext);
       if (nonce !== agentRequestNonce) return;
       if (plan && plan.actions.length) {
         stageProposal(plan);
-        addMessage('agent', `Your model prepared “${plan.title}”. I’ve staged it as a visible, reversible diff — review the exact steps, toggle any off, then approve when it feels right.`);
+        addMessage('agent', `The Orbit connection prepared “${plan.title}”. I’ve staged it as a visible, reversible diff — review the exact steps, toggle any off, then approve when it feels right.`);
         const includesSensitiveAction = plan.actions.some((action) => ['delete', 'restore_version', 'export', 'share'].includes(action.kind));
         if (state.currentMode === 'direct' && !includesSensitiveAction) await executePendingProposal({ autoApproved: true });
         if (state.currentMode === 'direct' && includesSensitiveAction) {
@@ -2935,10 +2924,10 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
         }
         return;
       }
-      addMessage('agent', 'Your model answered, but it did not return a safe plan. I’ll use the deterministic planner instead.');
+      addMessage('agent', 'The Orbit connection answered, but it did not return a safe plan. I’ll use the deterministic planner instead.');
     } catch (error) {
-      setAgentStatus('ready', 'Your model could not plan this', 'Falling back to the deterministic local planner.');
-      addMessage('agent', `Your model returned: ${error.message}. I’ll continue with the built-in planner so the studio keeps working.`);
+      setAgentStatus('ready', 'The Orbit connection could not plan this', 'Falling back to the deterministic local planner.');
+      addMessage('agent', `The Orbit connection returned: ${error.message}. I’ll continue with the built-in planner so the studio keeps working.`);
       if (nonce !== agentRequestNonce) return;
     }
   }
@@ -3639,91 +3628,51 @@ function loadSharedSceneFromLocation() {
   }
 }
 
-/* Bring-your-own-model settings and privacy wipe */
-function readApiKeyForm() {
-  return {
-    provider: els.llmProviderSelect.value || DEFAULT_PROVIDER,
-    apiKey: els.llmApiKeyInput.value.trim(),
-    model: els.llmModelInput.value.trim(),
-    baseUrl: els.llmBaseUrlInput.value.trim()
-  };
+/* Orbit connection panel and privacy wipe */
+function refreshOrbitConnectionUi() {
+  const connection = getOrbitConnection();
+  els.connectionStatusCard.classList.toggle('connected', connection.connected);
+  els.connectionStatusTitle.textContent = connection.connected ? 'Orbit connection active' : 'Orbit connection off';
+  els.connectionStatusCopy.textContent = connection.connected
+    ? 'Open-ended creative builds are planned through the Orbit connection. Every change still needs your approval.'
+    : "Orbit's local deterministic agent keeps working without it.";
+  els.orbitConnectionButton.title = connection.connected ? 'Orbit connection active — manage the connection' : 'Connect Orbit — no API key needed';
+  els.orbitConnectButton.disabled = connection.connected;
+  els.orbitDisconnectButton.disabled = !connection.connected;
 }
 
-function applyProviderDefaults(provider, { forceModel = false } = {}) {
-  const currentConfig = getLlmConfig();
-  const modelInputWasEmpty = !els.llmModelInput.value.trim();
-  const modelMatchesPreviousDefault = els.llmModelInput.value.trim() === defaultModelFor(currentConfig.provider);
-  if (forceModel || modelInputWasEmpty || modelMatchesPreviousDefault) {
-    els.llmModelInput.value = defaultModelFor(provider);
-  }
-  els.llmModelInput.placeholder = defaultModelFor(provider);
-  const base = currentConfig.provider === provider && currentConfig.baseUrl
-    ? currentConfig.baseUrl
-    : (currentConfig.provider === provider ? currentConfig.baseUrl : '');
-  els.llmBaseUrlInput.value = base || defaultBaseUrlFor(provider);
-  els.llmBaseUrlInput.placeholder = defaultBaseUrlFor(provider) || 'https://your-proxy.example/v1';
+function setConnectionTestResult(message, status = '') {
+  els.orbitTestResult.textContent = message;
+  els.orbitTestResult.classList.remove('ok', 'error');
+  if (status) els.orbitTestResult.classList.add(status);
 }
 
-function refreshApiKeyUi() {
-  const config = getLlmConfig();
-  const connected = isLlmConfigured(config);
-  els.llmProviderSelect.value = config.provider;
-  els.llmApiKeyInput.value = config.apiKey || '';
-  els.llmModelInput.value = config.model || defaultModelFor(config.provider);
-  els.llmModelInput.placeholder = defaultModelFor(config.provider);
-  els.llmBaseUrlInput.value = config.baseUrl || defaultBaseUrlFor(config.provider);
-  els.llmBaseUrlInput.placeholder = defaultBaseUrlFor(config.provider) || 'https://your-proxy.example/v1';
-  els.apiStatusCard.classList.toggle('connected', connected);
-  els.apiStatusTitle.textContent = connected ? `${providerLabel(config.provider)} connected` : 'No model connected';
-  els.apiStatusCopy.textContent = connected
-    ? `Using ${config.model}. The key is held in this tab's memory only and is never persisted.`
-    : "Orbit's local deterministic agent will keep working until you connect a model.";
-  els.apiKeyButton.title = connected ? `Connected to ${providerLabel(config.provider)} — manage key` : 'Bring your own LLM API key';
+function connectOrbitFromPanel() {
+  connectOrbit();
+  refreshOrbitConnectionUi();
+  setConnectionTestResult('Orbit connection active for this tab. No key was requested, stored, or sent.', 'ok');
+  addActivity('Connected the Orbit connection', 'Keyless Orbit connection active for this tab — no credential is held.', 'human');
+  showToast('Orbit connection active for this tab');
+  setAgentStatus('ready', 'Orbit connection active', 'Open-ended builds are planned through the Orbit connection. Every change still needs your approval.');
 }
 
-function setApiTestResult(message, status = '') {
-  els.llmTestResult.textContent = message;
-  els.llmTestResult.classList.remove('ok', 'error');
-  if (status) els.llmTestResult.classList.add(status);
+async function testOrbitConnectionFromPanel() {
+  els.orbitTestButton.disabled = true;
+  els.orbitTestButton.textContent = 'Testing…';
+  setConnectionTestResult('Reaching the Orbit connection…', '');
+  const result = await testOrbitConnection();
+  els.orbitTestButton.disabled = false;
+  els.orbitTestButton.textContent = 'Test connection';
+  setConnectionTestResult(result.ok ? `✓ ${result.message}` : `✕ ${result.message}`, result.ok ? 'ok' : 'error');
 }
 
-function saveLlmConfigFromForm() {
-  const validated = validateLlmConfig(readApiKeyForm());
-  if (!validated.ok) {
-    setApiTestResult(validated.message, 'error');
-    return;
-  }
-  const config = setLlmConfig(validated.config);
-  refreshApiKeyUi();
-  setApiTestResult(`Key accepted for this tab — ${providerLabel(config.provider)} / ${config.model}. Nothing was written to localStorage.`, 'ok');
-  addActivity('Connected personal LLM', `${providerLabel(config.provider)} · ${config.model} · key kept in memory only.`, 'human');
-  showToast('Your own API key is active for this tab');
-  setAgentStatus('ready', 'Personal model connected', `Using ${config.model} for open-ended builds. Every change still needs your approval.`);
-}
-
-async function testLlmConfigFromForm() {
-  const validated = validateLlmConfig(readApiKeyForm());
-  if (!validated.ok) {
-    setApiTestResult(validated.message, 'error');
-    return;
-  }
-  els.llmTestButton.disabled = true;
-  els.llmTestButton.textContent = 'Testing…';
-  setApiTestResult(`Contacting ${providerLabel(validated.config.provider)}…`, '');
-  const result = await testLlmConnection(validated.config);
-  els.llmTestButton.disabled = false;
-  els.llmTestButton.textContent = 'Test connection';
-  setApiTestResult(result.ok ? `✓ ${result.message}` : `✕ ${result.message}`, result.ok ? 'ok' : 'error');
-}
-
-function forgetLlmKeyFromForm() {
-  clearLlmConfig();
-  els.llmApiKeyInput.value = '';
-  refreshApiKeyUi();
-  setApiTestResult('Key cleared from this tab. The browser never stored it.', 'ok');
-  addActivity('Forgot personal LLM key', 'The user cleared their API key from memory after use.', 'human');
-  showToast('API key cleared from memory');
-  setAgentStatus('ready', 'Personal model disconnected', 'No API key is held. Orbit is back on the deterministic planner.');
+function disconnectOrbitFromPanel() {
+  disconnectOrbit();
+  refreshOrbitConnectionUi();
+  setConnectionTestResult('Orbit connection closed. The deterministic planner is fully in charge again.', 'ok');
+  addActivity('Disconnected the Orbit connection', 'The user closed the Orbit connection for this tab.', 'human');
+  showToast('Orbit connection closed');
+  setAgentStatus('ready', 'Orbit connection closed', 'The deterministic local planner keeps the studio fully functional.');
 }
 
 function resetConversation() {
@@ -3733,7 +3682,7 @@ function resetConversation() {
   const bubble = node('div', 'message-bubble');
   bubble.append(
     node('span', 'message-label', 'Orbit Agent'),
-    node('p', '', 'Session data wiped. All scene state, checkpoints, memory and your API key are gone from this browser. What should we build next?')
+    node('p', '', 'Session data wiped. All scene state, checkpoints, memory and the Orbit connection are cleared from this browser. What should we build next?')
   );
   intro.append(bubble);
   els.conversation.append(intro);
@@ -3743,8 +3692,9 @@ function performWipe() {
   /*
    * Cancel any in-flight work before clearing state. An active streamed run
    * that survives the wipe could resume its delay loop and mutate the freshly
-   * reset scene, and an outstanding LLM request must not stage a proposal on
-   * a cleared canvas. Bumping the nonce invalidates every pending handler.
+   * reset scene, and an outstanding Orbit connection request must not stage a
+   * proposal on a cleared canvas. Bumping the nonce invalidates every pending
+   * handler.
    */
   if (state.activeRun && !state.activeRun.finished) {
     state.activeRun.interrupted = true;
@@ -3754,8 +3704,7 @@ function performWipe() {
   state.lastAgentRun = null;
   agentRequestNonce += 1;
 
-  clearLlmConfig();
-  els.llmApiKeyInput.value = '';
+  disconnectOrbit();
   els.agentInput.value = '';
   els.commentInput.value = '';
   hideBuildOverlay();
@@ -3795,12 +3744,12 @@ function performWipe() {
   els.timeTravelOverlay.classList.add('hidden');
   document.body.classList.remove('viewport-focus');
   resetConversation();
-  closeModal('api-key-modal');
-  refreshApiKeyUi();
+  closeModal('orbit-connection-modal');
+  refreshOrbitConnectionUi();
   refreshUI({ scene: true });
-  setAgentStatus('ready', 'Everything cleared', 'Scene, history, memory and the API key are gone from this browser.');
-  setCanvasMessage('All local data and your key were wiped');
-  showToast('All local data and the key were wiped');
+  setAgentStatus('ready', 'Everything cleared', 'Scene, history, memory and the Orbit connection are cleared from this browser.');
+  setCanvasMessage('All local data was wiped');
+  showToast('All local data was wiped');
 }
 
 function armWipeButton() {
@@ -3814,14 +3763,14 @@ function armWipeButton() {
 }
 
 /*
- * LLM-proposal bridge. When a personal model is connected, the Orbit agent
- * delegates open-ended creative planning to it. The model proposes changes,
- * but Orbit always stages, caps and gates the proposal through human approval.
- * The LLM is used for any creative tool route — not just the two composite
- * builders — so the model can freely set any material, colour, texture, and
- * geometry the user asks for.
+ * Orbit connection proposal bridge. When the Orbit connection is active, the
+ * Orbit agent delegates open-ended creative planning to it. The planning model
+ * proposes changes, but Orbit always stages, caps and gates the proposal
+ * through human approval. The connection is used for any creative tool route —
+ * not just the two composite builders — so it can freely set any material,
+ * colour, texture, and geometry the user asks for.
  */
-const LLM_ENABLED_TOOLS = new Set([
+const ORBIT_CONNECTION_ENABLED_TOOLS = new Set([
   'propose_changes',
   'create_composite_object',
   'modify_object',
@@ -3829,11 +3778,11 @@ const LLM_ENABLED_TOOLS = new Set([
   'refine_texture'
 ]);
 
-function shouldUseLlmForTool(tool) {
-  return isLlmConfigured(getLlmConfig()) && LLM_ENABLED_TOOLS.has(tool);
+function shouldUseOrbitConnectionForTool(tool) {
+  return isOrbitConnected() && ORBIT_CONNECTION_ENABLED_TOOLS.has(tool);
 }
 
-function parseLlmPlanJson(text) {
+function parseOrbitPlanJson(text) {
   const cleaned = String(text || '')
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
@@ -3848,7 +3797,7 @@ function parseLlmPlanJson(text) {
   }
 }
 
-function normaliseLlmPlan(raw) {
+function normaliseOrbitPlan(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.actions)) return null;
   /*
    * Hard safety bound: the prompt instructs the model to stay under 14 steps,
@@ -3856,8 +3805,8 @@ function normaliseLlmPlan(raw) {
    * truncated deterministically rather than rejected wholesale, so a useful
    * subset still reaches the human for approval.
    */
-  const MAX_LLM_ACTIONS = 14;
-  const rawActions = raw.actions.slice(0, MAX_LLM_ACTIONS);
+  const MAX_ORBIT_ACTIONS = 14;
+  const rawActions = raw.actions.slice(0, MAX_ORBIT_ACTIONS);
   const actions = [];
   rawActions.forEach((item) => {
     if (!item || typeof item !== 'object') return;
@@ -3905,21 +3854,21 @@ function normaliseLlmPlan(raw) {
   });
   if (!actions.length) return null;
   return {
-    title: String(raw.title || 'Your model’s proposal').slice(0, 80),
-    description: String(raw.description || 'A proposal generated with your own LLM, staged for human approval.').slice(0, 240),
-    why: String(raw.why || 'Your key powered the plan; the human still decides the exact scope.').slice(0, 240),
+    title: String(raw.title || 'Orbit’s proposal').slice(0, 80),
+    description: String(raw.description || 'A proposal generated through the Orbit connection, staged for human approval.').slice(0, 240),
+    why: String(raw.why || 'The Orbit connection powered the plan; the human still decides the exact scope.').slice(0, 240),
     intent: String(raw.intent || '').slice(0, 300),
     style: effectiveStyle(raw.intent || ''),
     actions
   };
 }
 
-function llmSystemPromptFor(liveContext) {
+function orbitSystemPromptFor(liveContext) {
   const style = state.designContext.style || 'Exploratory';
   const persona = state.designContext.persona || 'Adaptive co-designer';
   const preferences = (state.designContext.preferences || []).join('; ');
   return [
-    'You are the creative planner inside Orbit, a browser 3D co-design studio.',
+    'You are the creative planner behind the Orbit connection, serving a browser 3D co-design studio.',
     'You never mutate anything yourself. You return a proposal in JSON only.',
     `Collaboration role: ${persona}. Current style direction: ${style}.`,
     `Remembered preferences: ${preferences || 'none yet'}.`,
@@ -3946,8 +3895,7 @@ function llmSystemPromptFor(liveContext) {
   ].join('\n');
 }
 
-async function buildLlmPlan(request, liveContext) {
-  const config = getLlmConfig();
+async function buildOrbitPlan(request, liveContext) {
   const scenePreview = {
     objects: state.objects.map((object) => ({
       id: object.id,
@@ -3973,8 +3921,8 @@ async function buildLlmPlan(request, liveContext) {
     '',
     'Return the JSON proposal only.'
   ].join('\n');
-  const raw = await chatCompletion(config, { system: llmSystemPromptFor(liveContext), user });
-  return normaliseLlmPlan(parseLlmPlanJson(raw));
+  const raw = await orbitPlanningRequest({ system: orbitSystemPromptFor(liveContext), user });
+  return normaliseOrbitPlan(parseOrbitPlanJson(raw));
 }
 
 /* DOM interaction */
@@ -4155,21 +4103,17 @@ function bindEvents() {
   els.exitTimeTravelCanvasButton.addEventListener('click', exitTimeTravel);
 
   $('#permissions-btn').addEventListener('click', () => openModal('permissions-modal'));
-  els.apiKeyButton.addEventListener('click', () => {
+  els.orbitConnectionButton.addEventListener('click', () => {
     window.clearTimeout(wipeConfirmTimer);
     els.wipeAllButton.classList.remove('armed');
     els.wipeAllButton.textContent = 'Wipe everything';
-    refreshApiKeyUi();
-    setApiTestResult('', '');
-    openModal('api-key-modal');
+    refreshOrbitConnectionUi();
+    setConnectionTestResult('', '');
+    openModal('orbit-connection-modal');
   });
-  els.llmProviderSelect.addEventListener('change', () => {
-    applyProviderDefaults(els.llmProviderSelect.value, { forceModel: true });
-    setApiTestResult('', '');
-  });
-  els.llmSaveButton.addEventListener('click', saveLlmConfigFromForm);
-  els.llmTestButton.addEventListener('click', testLlmConfigFromForm);
-  els.llmRemoveButton.addEventListener('click', forgetLlmKeyFromForm);
+  els.orbitConnectButton.addEventListener('click', connectOrbitFromPanel);
+  els.orbitTestButton.addEventListener('click', testOrbitConnectionFromPanel);
+  els.orbitDisconnectButton.addEventListener('click', disconnectOrbitFromPanel);
   els.wipeAllButton.addEventListener('click', () => {
     if (!els.wipeAllButton.classList.contains('armed')) {
       armWipeButton();
@@ -4231,7 +4175,7 @@ function bindEvents() {
 async function bootstrap() {
   initThree();
   bindEvents();
-  refreshApiKeyUi();
+  refreshOrbitConnectionUi();
   const restored = loadPersistedWorkspace();
   const rememberedPreferences = clone(state.designContext.preferences || []);
   const rememberedPersona = state.designContext.persona;
