@@ -2,6 +2,19 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { routePrompt, extractRestoreTarget } from './agent-router.js';
+import {
+  DEFAULT_PROVIDER,
+  defaultBaseUrlFor,
+  defaultModelFor,
+  getLlmConfig,
+  isLlmConfigured,
+  providerLabel,
+  setLlmConfig,
+  clearLlmConfig,
+  testLlmConnection,
+  chatCompletion,
+  validateLlmConfig
+} from './llm-provider.js';
 
 /*
  * Orbit is deliberately client-side: the visual studio and the WebMCP tools
@@ -48,6 +61,19 @@ const els = {
   toastCopy: $('#webmcp-toast-copy'),
   footerStatus: $('#webmcp-footer-status'),
   permissionsModal: $('#permissions-modal'),
+  apiKeyButton: $('#api-key-btn'),
+  apiStatusCard: $('#api-status-card'),
+  apiStatusTitle: $('#api-status-title'),
+  apiStatusCopy: $('#api-status-copy'),
+  llmProviderSelect: $('#llm-provider-select'),
+  llmApiKeyInput: $('#llm-api-key-input'),
+  llmModelInput: $('#llm-model-input'),
+  llmBaseUrlInput: $('#llm-base-url-input'),
+  llmTestButton: $('#llm-test-btn'),
+  llmSaveButton: $('#llm-save-btn'),
+  llmRemoveButton: $('#llm-remove-btn'),
+  llmTestResult: $('#llm-test-result'),
+  wipeAllButton: $('#wipe-all-btn'),
   reviewModal: $('#review-modal'),
   reviewScore: $('#review-score'),
   reviewSummary: $('#review-summary'),
@@ -162,6 +188,7 @@ let hoverClearTimer;
 let toastTimer;
 let agentRequestNonce = 0;
 let currentReview = null;
+let wipeConfirmTimer = null;
 const toolRegistry = new Map();
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -2870,6 +2897,30 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   }
   if (refinePendingProposal(request)) return;
 
+  if (shouldUseLlmForTool(routedIntent.tool)) {
+    const config = getLlmConfig();
+    setAgentStatus('thinking', `Asking ${providerLabel(config.provider)}`, `Using ${config.model} to prepare a plan. The proposal still needs your approval.`);
+    try {
+      const plan = await buildLlmPlan(request, liveContext);
+      if (nonce !== agentRequestNonce) return;
+      if (plan && plan.actions.length) {
+        stageProposal(plan);
+        addMessage('agent', `Your model prepared “${plan.title}”. I’ve staged it as a visible, reversible diff — review the exact steps, toggle any off, then approve when it feels right.`);
+        const includesSensitiveAction = plan.actions.some((action) => ['delete', 'restore_version', 'export', 'share'].includes(action.kind));
+        if (state.currentMode === 'direct' && !includesSensitiveAction) await executePendingProposal({ autoApproved: true });
+        if (state.currentMode === 'direct' && includesSensitiveAction) {
+          setCanvasMessage('Sensitive actions stay approval-gated, even in Direct mode');
+        }
+        return;
+      }
+      addMessage('agent', 'Your model answered, but it did not return a safe plan. I’ll use the deterministic planner instead.');
+    } catch (error) {
+      setAgentStatus('ready', 'Your model could not plan this', 'Falling back to the deterministic local planner.');
+      addMessage('agent', `Your model returned: ${error.message}. I’ll continue with the built-in planner so the studio keeps working.`);
+      if (nonce !== agentRequestNonce) return;
+    }
+  }
+
   setAgentStatus('thinking', 'Turning intent into a plan', 'I am reading the scene and preparing a visible, reversible diff.');
   await delay(330);
   if (nonce !== agentRequestNonce) return;
@@ -3566,6 +3617,305 @@ function loadSharedSceneFromLocation() {
   }
 }
 
+/* Bring-your-own-model settings and privacy wipe */
+function readApiKeyForm() {
+  return {
+    provider: els.llmProviderSelect.value || DEFAULT_PROVIDER,
+    apiKey: els.llmApiKeyInput.value.trim(),
+    model: els.llmModelInput.value.trim(),
+    baseUrl: els.llmBaseUrlInput.value.trim()
+  };
+}
+
+function applyProviderDefaults(provider, { forceModel = false } = {}) {
+  const currentConfig = getLlmConfig();
+  const modelInputWasEmpty = !els.llmModelInput.value.trim();
+  const modelMatchesPreviousDefault = els.llmModelInput.value.trim() === defaultModelFor(currentConfig.provider);
+  if (forceModel || modelInputWasEmpty || modelMatchesPreviousDefault) {
+    els.llmModelInput.value = defaultModelFor(provider);
+  }
+  els.llmModelInput.placeholder = defaultModelFor(provider);
+  const base = currentConfig.provider === provider && currentConfig.baseUrl
+    ? currentConfig.baseUrl
+    : (currentConfig.provider === provider ? currentConfig.baseUrl : '');
+  els.llmBaseUrlInput.value = base || defaultBaseUrlFor(provider);
+  els.llmBaseUrlInput.placeholder = defaultBaseUrlFor(provider) || 'https://your-proxy.example/v1';
+}
+
+function refreshApiKeyUi() {
+  const config = getLlmConfig();
+  const connected = isLlmConfigured(config);
+  els.llmProviderSelect.value = config.provider;
+  els.llmApiKeyInput.value = config.apiKey || '';
+  els.llmModelInput.value = config.model || defaultModelFor(config.provider);
+  els.llmModelInput.placeholder = defaultModelFor(config.provider);
+  els.llmBaseUrlInput.value = config.baseUrl || defaultBaseUrlFor(config.provider);
+  els.llmBaseUrlInput.placeholder = defaultBaseUrlFor(config.provider) || 'https://your-proxy.example/v1';
+  els.apiStatusCard.classList.toggle('connected', connected);
+  els.apiStatusTitle.textContent = connected ? `${providerLabel(config.provider)} connected` : 'No model connected';
+  els.apiStatusCopy.textContent = connected
+    ? `Using ${config.model}. The key is held in this tab's memory only and is never persisted.`
+    : "Orbit's local deterministic agent will keep working until you connect a model.";
+  els.apiKeyButton.title = connected ? `Connected to ${providerLabel(config.provider)} — manage key` : 'Bring your own LLM API key';
+}
+
+function setApiTestResult(message, status = '') {
+  els.llmTestResult.textContent = message;
+  els.llmTestResult.classList.remove('ok', 'error');
+  if (status) els.llmTestResult.classList.add(status);
+}
+
+function saveLlmConfigFromForm() {
+  const validated = validateLlmConfig(readApiKeyForm());
+  if (!validated.ok) {
+    setApiTestResult(validated.message, 'error');
+    return;
+  }
+  const config = setLlmConfig(validated.config);
+  refreshApiKeyUi();
+  setApiTestResult(`Key accepted for this tab — ${providerLabel(config.provider)} / ${config.model}. Nothing was written to localStorage.`, 'ok');
+  addActivity('Connected personal LLM', `${providerLabel(config.provider)} · ${config.model} · key kept in memory only.`, 'human');
+  showToast('Your own API key is active for this tab');
+  setAgentStatus('ready', 'Personal model connected', `Using ${config.model} for open-ended builds. Every change still needs your approval.`);
+}
+
+async function testLlmConfigFromForm() {
+  const validated = validateLlmConfig(readApiKeyForm());
+  if (!validated.ok) {
+    setApiTestResult(validated.message, 'error');
+    return;
+  }
+  els.llmTestButton.disabled = true;
+  els.llmTestButton.textContent = 'Testing…';
+  setApiTestResult(`Contacting ${providerLabel(validated.config.provider)}…`, '');
+  const result = await testLlmConnection(validated.config);
+  els.llmTestButton.disabled = false;
+  els.llmTestButton.textContent = 'Test connection';
+  setApiTestResult(result.ok ? `✓ ${result.message}` : `✕ ${result.message}`, result.ok ? 'ok' : 'error');
+}
+
+function forgetLlmKeyFromForm() {
+  clearLlmConfig();
+  els.llmApiKeyInput.value = '';
+  refreshApiKeyUi();
+  setApiTestResult('Key cleared from this tab. The browser never stored it.', 'ok');
+  addActivity('Forgot personal LLM key', 'The user cleared their API key from memory after use.', 'human');
+  showToast('API key cleared from memory');
+  setAgentStatus('ready', 'Personal model disconnected', 'No API key is held. Orbit is back on the deterministic planner.');
+}
+
+function resetConversation() {
+  els.conversation.replaceChildren();
+  const intro = node('article', 'message agent-message intro-message');
+  intro.append(node('div', 'message-avatar', '✦'));
+  const bubble = node('div', 'message-bubble');
+  bubble.append(
+    node('span', 'message-label', 'Orbit Agent'),
+    node('p', '', 'Session data wiped. All scene state, checkpoints, memory and your API key are gone from this browser. What should we build next?')
+  );
+  intro.append(bubble);
+  els.conversation.append(intro);
+}
+
+function performWipe() {
+  clearLlmConfig();
+  els.llmApiKeyInput.value = '';
+  els.agentInput.value = '';
+  els.commentInput.value = '';
+  try {
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith('orbit-'))
+      .forEach((key) => localStorage.removeItem(key));
+  } catch (_) { /* Storage is a convenience; the reset still completes. */ }
+  if (window.location.hash) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+  Object.assign(state, {
+    objects: [],
+    selectedId: null,
+    hoveredId: null,
+    constraints: [],
+    comments: [],
+    designContext: { intent: '', style: 'Exploratory', updatedAt: null, preferences: [], persona: 'Adaptive co-designer' },
+    history: [],
+    historyIndex: -1,
+    versions: [],
+    currentVersionId: null,
+    pendingProposal: null,
+    lastAgentRun: null,
+    activeRun: null,
+    locks: {},
+    selectionRevision: 0,
+    selectionContext: { selected_object: null, pointed_object: null, revision: 0, updated_at: null },
+    timeTravel: { active: false, eventId: null, liveSnapshot: null },
+    activity: [],
+    currentMode: 'planning',
+    permissions: { read: true, create: true, modify: true, delete: false, export: false, share: false }
+  });
+  $$('[data-permission]').forEach((input) => { input.checked = Boolean(state.permissions[input.dataset.permission]); });
+  $$('[data-mode]').forEach((button) => button.classList.toggle('active', button.dataset.mode === 'planning'));
+  els.modeHint.textContent = 'Planning mode — changes need your approval.';
+  els.timeTravelOverlay.classList.add('hidden');
+  document.body.classList.remove('viewport-focus');
+  resetConversation();
+  closeModal('api-key-modal');
+  refreshApiKeyUi();
+  refreshUI({ scene: true });
+  setAgentStatus('ready', 'Everything cleared', 'Scene, history, memory and the API key are gone from this browser.');
+  setCanvasMessage('All local data and your key were wiped');
+  showToast('All local data and the key were wiped');
+}
+
+function armWipeButton() {
+  window.clearTimeout(wipeConfirmTimer);
+  els.wipeAllButton.classList.add('armed');
+  els.wipeAllButton.textContent = 'Click again to confirm wipe';
+  wipeConfirmTimer = window.setTimeout(() => {
+    els.wipeAllButton.classList.remove('armed');
+    els.wipeAllButton.textContent = 'Wipe everything';
+  }, 5000);
+}
+
+/* LLM-proposal bridge. The model only proposes; Orbit still stages and approves. */
+function shouldUseLlmForTool(tool) {
+  return isLlmConfigured(getLlmConfig()) && ['propose_changes', 'create_composite_object'].includes(tool);
+}
+
+function parseLlmPlanJson(text) {
+  const cleaned = String(text || '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch (_) {
+    return null;
+  }
+}
+
+function normaliseLlmPlan(raw) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.actions)) return null;
+  const actions = [];
+  raw.actions.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    if (item.kind === 'add' && item.object && TYPES.includes(item.object.type)) {
+      actions.push({ kind: 'add', object: normaliseObject({ ...item.object, color: validColor(item.object.color) ? item.object.color : MATERIALS[item.object.material]?.color, tags: Array.isArray(item.object.tags) ? item.object.tags : [] }) });
+      return;
+    }
+    if (item.kind === 'modify') {
+      const objectId = item.objectId === '$selected' ? state.selectedId : item.objectId;
+      const target = state.objects.find((object) => object.id === objectId);
+      if (objectId && target) {
+        const patch = sanitisePatch(target, item.patch || {});
+        if (Object.keys(patch).length) {
+          actions.push({ kind: 'modify', objectId, patch, label: `Refine ${target.name}` });
+        }
+      }
+      return;
+    }
+    if (item.kind === 'delete') {
+      const objectId = item.objectId === '$selected' ? state.selectedId : item.objectId;
+      if (objectId && state.objects.some((object) => object.id === objectId)) actions.push({ kind: 'delete', objectId });
+      return;
+    }
+    if (item.kind === 'symmetrize') {
+      actions.push({ kind: 'symmetrize' });
+      return;
+    }
+    if (item.kind === 'snap') {
+      const objectIds = Array.isArray(item.objectIds)
+        ? item.objectIds.filter((id) => state.objects.some((object) => object.id === id))
+        : (state.selectedId ? [state.selectedId] : []);
+      if (objectIds.length) actions.push({ kind: 'snap', objectIds });
+      return;
+    }
+    if (item.kind === 'add_constraint' && ['symmetry', 'ground'].includes(item.constraint?.type)) {
+      actions.push({
+        kind: 'add_constraint',
+        constraint: {
+          type: item.constraint.type,
+          objectIds: Array.isArray(item.constraint.objectIds) ? item.constraint.objectIds.filter((id) => state.objects.some((object) => object.id === id)) : null,
+          label: item.constraint.label || (item.constraint.type === 'symmetry' ? 'Mirror across center axis' : 'Keep forms on ground plane')
+        }
+      });
+    }
+  });
+  if (!actions.length) return null;
+  return {
+    title: String(raw.title || 'Your model’s proposal').slice(0, 80),
+    description: String(raw.description || 'A proposal generated with your own LLM, staged for human approval.').slice(0, 240),
+    why: String(raw.why || 'Your key powered the plan; the human still decides the exact scope.').slice(0, 240),
+    intent: String(raw.intent || '').slice(0, 300),
+    style: effectiveStyle(raw.intent || ''),
+    actions
+  };
+}
+
+function llmSystemPromptFor(liveContext) {
+  const style = state.designContext.style || 'Exploratory';
+  const persona = state.designContext.persona || 'Adaptive co-designer';
+  const preferences = (state.designContext.preferences || []).join('; ');
+  return [
+    'You are the creative planner inside Orbit, a monochrome browser 3D co-design studio.',
+    'You never mutate anything yourself. You return a proposal in JSON only.',
+    `Collaboration role: ${persona}. Current style direction: ${style}.`,
+    `Remembered preferences: ${preferences || 'none yet'}.`,
+    'Available primitives: cube, sphere, cylinder, cone, torus, plane.',
+    'Available materials: metal, plastic, glass, wood, emissive.',
+    'Available textures: none, grid, brushed, noise, checker, hatch, dots.',
+    'Available detail levels: low, standard, high.',
+    'Return ONLY a JSON object shaped like this:',
+    '{',
+    '  "title": "...",',
+    '  "description": "...",',
+    '  "why": "...",',
+    '  "intent": "the human request",',
+    '  "actions": [',
+    '    {"kind":"add","object":{"type":"cylinder","name":"Body","position":[0,2,0],"scale":[1,2,1],"material":"metal","color":"#c8c8c8","texture":"brushed","textureScale":1,"detail":"standard","tags":["body"]}}',
+    '    or {"kind":"modify","objectId":"an existing id or $selected","patch":{"scale":[1.4,1.4,1.4]}}',
+    '    or {"kind":"delete","objectId":"an existing id or $selected"}',
+    '    or {"kind":"symmetrize"}',
+    '    or {"kind":"add_constraint","constraint":{"type":"symmetry"}}',
+    '  ]',
+    '}',
+    'Keep proposals under 14 reversible steps. Never return export, share, restore_version, or any destructive server-side action. Every create should include a valid primitive type, material, texture, detail, and greyscale color.'
+  ].join('\n');
+}
+
+async function buildLlmPlan(request, liveContext) {
+  const config = getLlmConfig();
+  const scenePreview = {
+    objects: state.objects.map((object) => ({
+      id: object.id,
+      name: object.name,
+      type: object.type,
+      position: object.position,
+      scale: object.scale,
+      material: object.material,
+      texture: object.texture,
+      detail: object.detail,
+      color: object.color,
+      tags: object.tags
+    })),
+    selected: (liveContext?.selected_object?.name) || null,
+    constraints: state.constraints.map((constraint) => constraint.type)
+  };
+  const user = [
+    'Current scene:',
+    JSON.stringify(scenePreview),
+    '',
+    'Human request:',
+    request,
+    '',
+    'Return the JSON proposal only.'
+  ].join('\n');
+  const raw = await chatCompletion(config, { system: llmSystemPromptFor(liveContext), user });
+  return normaliseLlmPlan(parseLlmPlanJson(raw));
+}
+
 /* DOM interaction */
 function openModal(id) { $(`#${id}`).classList.remove('hidden'); }
 function closeModal(id) { $(`#${id}`).classList.add('hidden'); }
@@ -3744,6 +4094,28 @@ function bindEvents() {
   els.exitTimeTravelCanvasButton.addEventListener('click', exitTimeTravel);
 
   $('#permissions-btn').addEventListener('click', () => openModal('permissions-modal'));
+  els.apiKeyButton.addEventListener('click', () => {
+    window.clearTimeout(wipeConfirmTimer);
+    els.wipeAllButton.classList.remove('armed');
+    els.wipeAllButton.textContent = 'Wipe everything';
+    refreshApiKeyUi();
+    setApiTestResult('', '');
+    openModal('api-key-modal');
+  });
+  els.llmProviderSelect.addEventListener('change', () => {
+    applyProviderDefaults(els.llmProviderSelect.value, { forceModel: true });
+    setApiTestResult('', '');
+  });
+  els.llmSaveButton.addEventListener('click', saveLlmConfigFromForm);
+  els.llmTestButton.addEventListener('click', testLlmConfigFromForm);
+  els.llmRemoveButton.addEventListener('click', forgetLlmKeyFromForm);
+  els.wipeAllButton.addEventListener('click', () => {
+    if (!els.wipeAllButton.classList.contains('armed')) {
+      armWipeButton();
+      return;
+    }
+    performWipe();
+  });
   $$('[data-permission-preset]').forEach((button) => button.addEventListener('click', () => {
     const presets = {
       observe: { read: true, create: false, modify: false, delete: false, export: false, share: false },
@@ -3798,6 +4170,7 @@ function bindEvents() {
 async function bootstrap() {
   initThree();
   bindEvents();
+  refreshApiKeyUi();
   const restored = loadPersistedWorkspace();
   const rememberedPreferences = clone(state.designContext.preferences || []);
   const rememberedPersona = state.designContext.persona;

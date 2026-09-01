@@ -73,6 +73,8 @@ The studio is built around one idea: **your selection is your pointer into the c
 - **Full-space canvas.** The **⤢ / ⤡** buttons in the canvas HUD (or the `V` key / Viewport focus control) collapse and restore the manual panels on demand, so you can frame the model in the entire 3D space — the agent keeps working while the chrome disappears.
 - **Take the model with you.** **Download STL ⤓** in the canvas toolbar saves the current scene locally, with the file attached to the chat as a card you can re-download anytime. Agent-initiated exports do the same thing through the approval flow — the STL downloads and the file lands in the conversation. Nothing is ever uploaded.
 - **Time-travel audit.** Every action (human or agent) is logged with parameters and a scene snapshot. Scrub the timeline to inspect any past state read-only, then return to live.
+- **Bring your own LLM key.** Click **API key** in the top bar to connect an OpenAI-compatible, Anthropic, Gemini, or custom/local-proxy model. The key lives in memory for the current tab only — it is never written to `localStorage` and only reaches the provider you chose. Open-ended builds are still staged as approval-gated proposals; deterministic reads and edits stay local.
+- **Wipe after use.** The same panel has **Wipe everything** (two-click armed confirmation), which clears the scene, checkpoints, history, activity, annotations, constraints, preferences, the share fragment, and the API key in one go.
 - **Project memory.** “Remember that I prefer low poly.” — preferences and a collaboration persona (Adaptive co-designer, Visual designer, Geometry engineer, Design reviewer) persist across local sessions.
 
 ### A turn, end to end — “make it taller”
@@ -201,6 +203,7 @@ Orbit runs on a small, deliberate stack — no framework, no build step, no serv
 - **A WebMCP tool registry.** 32 JSON-schema-described tools whose handlers read the *live* scene, stage proposals, and attach `live_context` to every successful result. Registered natively via `navigator.modelContext` when available; always available through `window.webMCPStudio`.
 - **One shared in-memory scene state.** Objects, constraints, comments, intent, history, versions, proposals, permissions, and the activity log live in a single plain-JS store that powers the canvas, the inspector, the planner, the tools, and the persistence layer — so the human and the agent can never see different worlds.
 - **Local persistence & hand-off.** Workspace (scene + 12 checkpoints + memory) autosaves to `localStorage` and restores on reload — *including intentionally empty scenes, with their checkpoints and memory intact*. Share links encode the scene in the URL fragment for offline, serverless hand-off.
+- **Optional bring-your-own-model bridge** (`js/llm-provider.js`). A dependency-free client for OpenAI-compatible, Anthropic, Gemini, and custom/local-proxy endpoints. It holds the key in memory only, tests the connection without persisting anything, and hands open-ended creative builds to the chosen model while every proposal still passes the human approval flow.
 - **Browser platform features.** `SpeechRecognition` for voice direction, `Blob` + object URLs for local STL download, `CustomEvent` for the selection relay, `prefers-reduced-motion` for accessible motion.
 - **A monochrome design system.** OpenAI’s type stack (`OpenAI Sans → Söhne → Inter → Helvetica Neue`, with Inter as the metric-compatible open fallback) and `JetBrains Mono` for numeric readouts. Hierarchy comes from value, weight and space — never hue.
 
@@ -246,7 +249,7 @@ npm run check
 
 **Safety model.** Read/write separation · everything staged before it happens · human approval on every mutation · six permission gates · object-level edit locks · per-run transactional undo · version checkpoints · complete activity audit. Export and destructive actions are sensitive in every mode.
 
-**Privacy model.** No backend. No model-data upload, ever. Share links and STL files are local artifacts. Local storage is a convenience, not a service — and it’s re-validated field by field on restore.
+**Privacy model.** No backend. No model-data upload, ever. Share links and STL files are local artifacts. Local storage is a convenience, not a service — and it’s re-validated field by field on restore. If you opt into a personal LLM API key for open-ended planning, that key is intentionally *not* persisted: it stays in the page's memory and is cleared on refresh/close or with **Wipe everything**.
 
 ---
 

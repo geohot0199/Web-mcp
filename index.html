@@ -43,6 +43,9 @@
         <button id="checkpoint-btn" class="button button-quiet" type="button">
           <span class="button-icon">⌘</span> Checkpoint
         </button>
+        <button id="api-key-btn" class="button button-quiet" type="button">
+          <span class="button-icon">⌁</span> API key
+        </button>
         <button id="export-btn" class="button button-primary" type="button">
           Export <span aria-hidden="true">↗</span>
         </button>
@@ -412,6 +415,61 @@
         <label class="permission-row"><span><strong>Share scene</strong><small>Request a transferable scene link</small></span><input type="checkbox" data-permission="share"><i></i></label>
       </div>
       <button class="button button-primary modal-done" type="button" data-close-modal="permissions-modal">Done</button>
+    </div>
+  </div>
+
+  <div id="api-key-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="api-key-title">
+    <div class="modal-card api-key-card">
+      <button class="modal-close" type="button" data-close-modal="api-key-modal" aria-label="Close API key settings">×</button>
+      <span class="eyebrow">Bring your own model</span>
+      <h2 id="api-key-title">Use your own LLM API key</h2>
+      <p>No ChatGPT account required. Add an API key from OpenAI-compatible, Anthropic, Gemini, or a private/local proxy directly in this browser. The key stays in this tab's memory only — never written to storage or uploaded anywhere by Orbit.</p>
+
+      <div id="api-status-card" class="api-status-card">
+        <span class="status-orb"><i></i></span>
+        <div>
+          <strong id="api-status-title">No model connected</strong>
+          <p id="api-status-copy">Orbit's local deterministic agent will keep working until you connect a model.</p>
+        </div>
+      </div>
+
+      <div class="api-form">
+        <label class="api-field" for="llm-provider-select">Provider
+          <select id="llm-provider-select">
+            <option value="openai">OpenAI-compatible (ChatGPT, Azure-style, OpenRouter, local proxies)</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="custom">Custom / local proxy</option>
+          </select>
+        </label>
+        <label class="api-field" for="llm-api-key-input">API key
+          <input id="llm-api-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… / your provider key">
+        </label>
+        <label class="api-field" for="llm-model-input">Model
+          <input id="llm-model-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. gpt-4o-mini">
+        </label>
+        <label class="api-field" for="llm-base-url-input">Base URL / endpoint <small>(required for custom)</small>
+          <input id="llm-base-url-input" type="url" autocomplete="off" spellcheck="false" placeholder="Defaults to the selected provider">
+        </label>
+      </div>
+
+      <div class="api-note">Your key is held in memory for this tab only. It is never saved to localStorage, never leaves the browser except to your chosen provider, and is cleared automatically on refresh/close. If a provider blocks direct browser requests, point Base URL at a small CORS proxy.</div>
+
+      <div id="llm-test-result" class="llm-test-result" aria-live="polite"></div>
+
+      <div class="api-actions">
+        <button id="llm-test-btn" class="button button-quiet" type="button">Test connection</button>
+        <button id="llm-save-btn" class="button button-primary" type="button">Use this key</button>
+        <button id="llm-remove-btn" class="button button-quiet" type="button">Forget key</button>
+      </div>
+
+      <section class="wipe-section">
+        <span class="eyebrow">Privacy / after use</span>
+        <h3>Wipe all data and the key</h3>
+        <p>Clears the scene, checkpoints, history, activity, annotations, constraints, saved preferences, the URL share fragment, and the API key from this browser. Use this when you are finished on a shared or public machine.</p>
+        <button id="wipe-all-btn" class="button button-danger" type="button">Wipe everything</button>
+        <small id="wipe-confirm-hint">Click once to arm, then click again to confirm.</small>
+      </section>
     </div>
   </div>
 
