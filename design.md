@@ -118,7 +118,7 @@ The Activity panel is a read-only time-travel debugger. The human can click an e
 
 ## Project memory and personas
 
-Orbit stores explicit preferences in browser-local project memory only. The user can say “Remember I prefer low-poly mint-accented designs,” remove a chip, or choose a persistent role:
+Orbit stores explicit preferences in browser-local project memory only. The user can say “Remember I prefer low-poly, high-contrast designs,” remove a chip, or choose a persistent role:
 
 - Adaptive co-designer
 - Visual designer
@@ -176,3 +176,21 @@ These deterministic checks are exposed through `validate_scene`, so agents can v
 ## Browser compatibility
 
 The normal editor works in any current browser with WebGL and ES modules. Voice input is progressive enhancement via the browser’s `SpeechRecognition`/`webkitSpeechRecognition` API and clearly indicates when unavailable. When `navigator.modelContext` is available, the tool registry is registered with the native WebMCP bridge. When it is not available, the app keeps functioning as a fully interactive 3D design studio and exposes a small development bridge at `window.webMCPStudio`.
+
+## Visual system: monochrome, viewport-first
+
+The studio is deliberately black and white. Hue is reserved for nothing at all — hierarchy is
+carried by value, weight and space — because the only thing in the interface that should compete
+for attention is the model itself.
+
+- **Type.** `OpenAI Sans → Söhne → Inter → Helvetica Neue`, with `JetBrains Mono` for numeric and
+  machine readouts. OpenAI Sans is proprietary, so Inter is loaded as the metric-compatible open
+  fallback rather than shipping a lookalike.
+- **Surfaces.** One white page, one near-black viewport. The viewport is the single dark surface,
+  which makes it read as the subject rather than as another panel.
+- **Layout.** The canvas takes the largest column, and *Viewport focus* (`V`) collapses the manual
+  panels entirely, leaving only the model and the agent. Manual editing is available, but it is
+  never the centre of gravity.
+- **Materials.** Object colour is a greyscale value, so the finish (metal, matte, glass, grain,
+  emissive) and the procedural texture are what distinguish forms. Every texture is drawn on a 2D
+  canvas at runtime, so the whole scene remains reproducible from JSON with no binary assets.

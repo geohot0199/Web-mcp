@@ -4,9 +4,11 @@
 
 Orbit turns a browser-based 3D editor into a shared human–agent workflow. Instead of giving an agent a collection of blind UI clicks, the app gives it scene awareness, goal-level tools, visible proposals, deterministic reviews, and a clear approval boundary.
 
-![No build step required](https://img.shields.io/badge/runtime-static%20browser%20app-121a31?style=flat-square)
-![WebMCP tools](https://img.shields.io/badge/WebMCP-28%20goal--oriented%20tools-8876ff?style=flat-square)
-![Human control](https://img.shields.io/badge/human%20control-approval%20first-52dfc3?style=flat-square)
+![No build step required](https://img.shields.io/badge/runtime-static%20browser%20app-0d0d0d?style=flat-square)
+![WebMCP tools](https://img.shields.io/badge/WebMCP-32%20goal--oriented%20tools-0d0d0d?style=flat-square)
+![Human control](https://img.shields.io/badge/human%20control-approval%20first-4d4d4d?style=flat-square)
+
+**The core loop:** the agent can inspect a scene, change its geometry, and refine its textures through WebMCP. Every edit lands in the 3D viewport while you watch, so you can steer the next change on the same scene.
 
 ## Collaboration loop
 
@@ -23,12 +25,21 @@ The studio has two modes:
 
 ## What is implemented
 
-### A redesigned, animated studio
+### A monochrome, viewport-first studio
 
-- Purpose-built dark 3D workspace using a focused three-accent visual system: **violet**, **mint**, and **peach**.
-- Motion design throughout: animated orbital brand mark, ambient color fields, pulsing agent state, live canvas HUD, proposal transitions, and responsive hover feedback.
+- **Black and white only.** Hierarchy comes from value, weight and space — never hue — so the model, not the chrome, carries the colour budget.
+- **OpenAI typography.** The stack is `OpenAI Sans → Söhne → Inter → Helvetica Neue`, with `JetBrains Mono` for numeric and machine readouts. OpenAI Sans is proprietary, so Inter ships as the metric-compatible open fallback.
+- **Viewport first.** The 3D canvas is the largest surface in the layout, and *Viewport focus* (or the `V` key) collapses the manual panels entirely so only the model and the agent conversation remain.
+- Neutral three-point studio lighting in a near-black viewport, so greyscale values and surface finishes read honestly.
 - Interactive Three.js canvas with orbit/zoom, object picking, selection bounds, grid, scene focus, reset view, keyboard nudging, and **Shift + drag** human repositioning.
-- Responsive desktop/tablet/mobile layouts with the canvas kept central to the workflow.
+- Graceful degradation: if the browser has no WebGL context the viewport is replaced with an explanation, and the object list, inspector, history and every WebMCP tool keep working.
+
+### Geometry and textures the agent can actually change
+
+- **Geometry** is editable as data: primitive type, non-uniform scale, rotation, position, and mesh resolution (`low` / `standard` / `high`), with a live triangle estimate.
+- **Textures** are procedural and greyscale — `grid`, `brushed`, `noise`, `checker`, `hatch`, `dots` — generated on a 2D canvas so there are no binary assets and every surface is reproducible from state.
+- **Finishes** (`metal`, `matte`, `glass`, `grain`, `emissive`) provide roughness/metalness defaults that an agent or human can override per object.
+- Inspector sliders preview live in the viewport while dragging and commit as exactly one undoable history entry.
 
 ### Human + agent collaboration
 
@@ -70,12 +81,16 @@ The studio has two modes:
 
 ## WebMCP tool strategy
 
-Orbit intentionally exposes **28 goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
+Orbit intentionally exposes **32 goal-oriented tools**, rather than turning every individual button into a tool. The agent can observe first, plan at the user’s level of intent, request approval, and verify the resulting state.
 
 | Layer | Tool | Purpose |
 |---|---|---|
 | Read | `get_scene` | Complete structured scene, context, constraints, stats, and bounds |
 | Read | `get_selected_object` | Resolve human references such as “this” and “that” |
+| Inspect | `inspect_object` | Deep read of one object: geometry, resolution, world bounds, resolved surface, triangles, neighbours |
+| Inspect | `list_surface_options` | Every texture, finish, resolution and primitive the studio actually supports |
+| Geometry | `edit_geometry` | Swap primitive type, change mesh resolution, stretch, scale, rotate, move, or drop to ground |
+| Texture | `refine_texture` | Apply a procedural texture, change its scale, set the finish, or tune roughness, metalness and value |
 | Read | `find_objects` | Semantic object search |
 | Read | `get_scene_statistics` | Concise counts, bounds, symmetry, colors, versions |
 | Read | `get_design_context` | Intent, style, constraints, and annotations |
@@ -110,7 +125,15 @@ window.webMCPStudio.listTools();
 await window.webMCPStudio.callTool('get_scene');
 ```
 
-## Example agent workflow
+## Example agent workflow — inspect, change geometry, refine textures
+
+1. Human selects a form and says **“Inspect this object.”**
+2. Agent calls `inspect_object` and reports type, world bounds, triangle count, resolved roughness/metalness and nearest neighbours.
+3. Human: **“Make it low poly and stretch it taller.”** → `edit_geometry` stages `set_detail` and `stretch`, and each operation streams into the viewport as it is applied.
+4. Human: **“Give it a brushed metal surface, a bit rougher.”** → `refine_texture` stages `texture: brushed`, `finish: metal`, `roughness: 0.85`.
+5. Human watches the change land, then steers the next one on the same scene. Everything remains one undo away.
+
+## Example agent workflow — composite objects
 
 1. Human: **“Design a compact futuristic delivery drone.”**
 2. Agent calls `get_scene` and `get_design_context`.
@@ -124,7 +147,7 @@ await window.webMCPStudio.callTool('get_scene');
 
 ## Agent workflow evaluation suite
 
-`evals/agent-workflows.json` contains 29 varied prompts with expected goal-level tool choice, key parameter extraction, approval state, and sensitive-action handling. `scripts/run-agent-evals.mjs` executes the dependency-free local intent router against that fixture.
+`evals/agent-workflows.json` contains 36 varied prompts with expected goal-level tool choice, key parameter extraction, approval state, and sensitive-action handling. `scripts/run-agent-evals.mjs` executes the dependency-free local intent router against that fixture.
 
 ```bash
 npm run evals
@@ -177,7 +200,7 @@ Then open `http://localhost:8080`.
 
 ## Technology
 
-- Three.js `r164`
+- Three.js `r164` (loaded through an import map, so the addon modules resolve their bare `three` specifier)
 - Vanilla ES modules
 - HTML/CSS with no build dependency
 - WebMCP via `navigator.modelContext` when available
