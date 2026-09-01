@@ -43,8 +43,8 @@
         <button id="checkpoint-btn" class="button button-quiet" type="button">
           <span class="button-icon">⌘</span> Checkpoint
         </button>
-        <button id="api-key-btn" class="button button-quiet" type="button">
-          <span class="button-icon">⌁</span> API key
+        <button id="orbit-connection-btn" class="button button-quiet" type="button">
+          <span class="button-icon">◈</span> Orbit connection
         </button>
         <button id="export-btn" class="button button-primary" type="button">
           Export <span aria-hidden="true">↗</span>
@@ -423,55 +423,35 @@
     </div>
   </div>
 
-  <div id="api-key-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="api-key-title">
-    <div class="modal-card api-key-card">
-      <button class="modal-close" type="button" data-close-modal="api-key-modal" aria-label="Close API key settings">×</button>
-      <span class="eyebrow">Bring your own model</span>
-      <h2 id="api-key-title">Use your own LLM API key</h2>
-      <p>No ChatGPT account required. Add an API key from OpenAI-compatible, Anthropic, Gemini, or a private/local proxy directly in this browser. The key stays in this tab's memory only — never written to storage or uploaded anywhere by Orbit. When you send a creative request, your scene objects (geometry, positions, materials, colours, tags) and remembered design preferences are sent to the provider you chose so the model can propose changes.</p>
+  <div id="orbit-connection-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="orbit-connection-title">
+    <div class="modal-card orbit-connection-card">
+      <button class="modal-close" type="button" data-close-modal="orbit-connection-modal" aria-label="Close Orbit connection">×</button>
+      <span class="eyebrow">Orbit connection</span>
+      <h2 id="orbit-connection-title">Connect Orbit — no API keys</h2>
+      <p>No accounts, no API keys, no provider forms. One click connects the studio to Orbit's planning model for open-ended creative builds. There is no credential to store, lose, or leak — the connection lives in this tab's memory only. When you send a creative request, your scene objects (geometry, positions, materials, colours, tags) and remembered design preferences are sent to the Orbit connection so it can propose changes.</p>
 
-      <div id="api-status-card" class="api-status-card">
+      <div id="connection-status-card" class="connection-status-card">
         <span class="status-orb"><i></i></span>
         <div>
-          <strong id="api-status-title">No model connected</strong>
-          <p id="api-status-copy">Orbit's local deterministic agent will keep working until you connect a model.</p>
+          <strong id="connection-status-title">Orbit connection off</strong>
+          <p id="connection-status-copy">Orbit's local deterministic agent keeps working without it.</p>
         </div>
       </div>
 
-      <div class="api-form">
-        <label class="api-field" for="llm-provider-select">Provider
-          <select id="llm-provider-select">
-            <option value="openai">OpenAI-compatible (ChatGPT, Azure-style, OpenRouter, local proxies)</option>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="custom">Custom / local proxy</option>
-          </select>
-        </label>
-        <label class="api-field" for="llm-api-key-input">API key
-          <input id="llm-api-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… / your provider key">
-        </label>
-        <label class="api-field" for="llm-model-input">Model
-          <input id="llm-model-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. gpt-4o-mini">
-        </label>
-        <label class="api-field" for="llm-base-url-input">Base URL / endpoint <small>(required for custom)</small>
-          <input id="llm-base-url-input" type="url" autocomplete="off" spellcheck="false" placeholder="Defaults to the selected provider">
-        </label>
-      </div>
+      <div class="connection-note">Connecting asks for no key and no sign-in, so nothing sensitive is ever written to storage — the connection is held in memory for this tab and cleared on refresh/close. When you ask Orbit to build something, your current scene (objects, geometry, materials, colours, tags, constraints, and remembered preferences) is sent to the Orbit connection so it can propose a plan. If the connection is unavailable, every request falls back to the deterministic local planner automatically.</div>
 
-      <div class="api-note">Your key is held in memory for this tab only. It is never saved to localStorage and is cleared automatically on refresh/close. When you ask Orbit to build something, your current scene (objects, geometry, materials, colours, tags, constraints, and remembered preferences) is sent to the provider you chose so the model can propose a plan. If a provider blocks direct browser requests, point Base URL at a small CORS proxy.</div>
+      <div id="orbit-test-result" class="connection-test-result" aria-live="polite"></div>
 
-      <div id="llm-test-result" class="llm-test-result" aria-live="polite"></div>
-
-      <div class="api-actions">
-        <button id="llm-test-btn" class="button button-quiet" type="button">Test connection</button>
-        <button id="llm-save-btn" class="button button-primary" type="button">Use this key</button>
-        <button id="llm-remove-btn" class="button button-quiet" type="button">Forget key</button>
+      <div class="connection-actions">
+        <button id="orbit-test-btn" class="button button-quiet" type="button">Test connection</button>
+        <button id="orbit-connect-btn" class="button button-primary" type="button">Connect Orbit</button>
+        <button id="orbit-disconnect-btn" class="button button-quiet" type="button">Disconnect</button>
       </div>
 
       <section class="wipe-section">
         <span class="eyebrow">Privacy / after use</span>
-        <h3>Wipe all data and the key</h3>
-        <p>Clears the scene, checkpoints, history, activity, annotations, constraints, saved preferences, the URL share fragment, and the API key from this browser. Use this when you are finished on a shared or public machine.</p>
+        <h3>Wipe all data</h3>
+        <p>Clears the scene, checkpoints, history, activity, annotations, constraints, saved preferences, the URL share fragment, and the Orbit connection from this browser. Use this when you are finished on a shared or public machine.</p>
         <button id="wipe-all-btn" class="button button-danger" type="button">Wipe everything</button>
         <small id="wipe-confirm-hint">Click once to arm, then click again to confirm.</small>
       </section>

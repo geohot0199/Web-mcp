@@ -407,27 +407,22 @@ textarea::placeholder, input::placeholder { color: #909090; }
 .review-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 17px; }
 
 /* Bring-your-own-model & privacy wipe */
-.api-key-card { width: min(560px, 100%); background: linear-gradient(155deg, #ffffff, #f4f5f7 68%); color: var(--text); }
-.api-key-card h2 { color: var(--text); }
-.api-key-card .eyebrow { color: var(--text-muted); }
-.api-key-card > p { color: var(--text-soft); }
-.api-status-card { display: grid; grid-template-columns: 9px 1fr; gap: 9px; margin: 17px 0 14px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgba(13,13,13,0.03); }
-.api-status-card.connected { border-color: rgba(64,64,64,0.45); background: linear-gradient(135deg, rgba(13,13,13,0.055), rgba(13,13,13,0.025)); }
-.api-status-card strong { display: block; color: var(--text); font-size: 10px; }
-.api-status-card p { margin-top: 2px; color: var(--text-soft); font-size: 9px; line-height: 1.55; }
-.api-status-card .status-orb { display: grid; width: 8px; height: 8px; place-items: center; }
-.api-status-card .status-orb i { width: 7px; height: 7px; border-radius: 50%; background: var(--peach); }
-.api-status-card.connected .status-orb i { background: var(--mint); box-shadow: 0 0 9px rgba(64,64,64,0.7); }
-.api-form { display: grid; gap: 10px; }
-.api-field { display: grid; gap: 5px; color: var(--text-muted); font-family: var(--mono); font-size: 8px; letter-spacing: .07em; text-transform: uppercase; }
-.api-field small { color: var(--text-muted); font-family: var(--sans); font-size: 8px; letter-spacing: normal; text-transform: none; }
-.api-field input, .api-field select { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,0.82); color: var(--text); font-family: var(--sans); font-size: 11px; letter-spacing: normal; text-transform: none; outline: none; }
-.api-field input:focus, .api-field select:focus { border-color: rgba(64,64,64,0.65); background: #ffffff; }
-.api-note { margin: 13px 0; padding: 9px 10px; border-radius: 8px; background: rgba(13,13,13,0.035); color: var(--text-soft); font-size: 9px; line-height: 1.6; }
-.llm-test-result { min-height: 20px; margin-bottom: 9px; color: var(--text-soft); font-family: var(--mono); font-size: 8px; line-height: 1.5; }
-.llm-test-result.ok { color: var(--mint-bright); }
-.llm-test-result.error { color: #6b1f1f; }
-.api-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 17px; }
+.orbit-connection-card { width: min(560px, 100%); background: linear-gradient(155deg, #ffffff, #f4f5f7 68%); color: var(--text); }
+.orbit-connection-card h2 { color: var(--text); }
+.orbit-connection-card .eyebrow { color: var(--text-muted); }
+.orbit-connection-card > p { color: var(--text-soft); }
+.connection-status-card { display: grid; grid-template-columns: 9px 1fr; gap: 9px; margin: 17px 0 14px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgba(13,13,13,0.03); }
+.connection-status-card.connected { border-color: rgba(64,64,64,0.45); background: linear-gradient(135deg, rgba(13,13,13,0.055), rgba(13,13,13,0.025)); }
+.connection-status-card strong { display: block; color: var(--text); font-size: 10px; }
+.connection-status-card p { margin-top: 2px; color: var(--text-soft); font-size: 9px; line-height: 1.55; }
+.connection-status-card .status-orb { display: grid; width: 8px; height: 8px; place-items: center; }
+.connection-status-card .status-orb i { width: 7px; height: 7px; border-radius: 50%; background: var(--peach); }
+.connection-status-card.connected .status-orb i { background: var(--mint); box-shadow: 0 0 9px rgba(64,64,64,0.7); }
+.connection-note { margin: 13px 0; padding: 9px 10px; border-radius: 8px; background: rgba(13,13,13,0.035); color: var(--text-soft); font-size: 9px; line-height: 1.6; }
+.connection-test-result { min-height: 20px; margin-bottom: 9px; color: var(--text-soft); font-family: var(--mono); font-size: 8px; line-height: 1.5; }
+.connection-test-result.ok { color: var(--mint-bright); }
+.connection-test-result.error { color: #6b1f1f; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 17px; }
 .wipe-section { padding-top: 15px; border-top: 1px solid var(--line); }
 .wipe-section h3 { margin-top: 3px; font-size: 14px; letter-spacing: -.045em; }
 .wipe-section p { max-width: 440px; margin-top: 5px; color: var(--text-soft); font-size: 10px; line-height: 1.6; }
