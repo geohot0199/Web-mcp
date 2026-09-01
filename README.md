@@ -70,6 +70,8 @@ The studio is built around one idea: **your selection is your pointer into the c
 - **Interruptible builds.** Streamed runs stop cleanly at operation boundaries. A completed *or interrupted partial* run is one transaction: **Keep changes** or **Undo agent run**.
 - **Edit locks.** While the agent works on a form, the human’s drag/inspector/delete on that same form is locked out (outline + inspector show it) — no races between the two collaborators.
 - **Permissions, not trust.** Six human-controlled gates: **Read · Create · Modify · Delete · Export · Share**. Turn off Read and every read tool — and the local bridge — politely refuse.
+- **Full-space canvas.** The **⤢ / ⤡** buttons in the canvas HUD (or the `V` key / Viewport focus control) collapse and restore the manual panels on demand, so you can frame the model in the entire 3D space — the agent keeps working while the chrome disappears.
+- **Take the model with you.** **Download STL ⤓** in the canvas toolbar saves the current scene locally, with the file attached to the chat as a card you can re-download anytime. Agent-initiated exports do the same thing through the approval flow — the STL downloads and the file lands in the conversation. Nothing is ever uploaded.
 - **Time-travel audit.** Every action (human or agent) is logged with parameters and a scene snapshot. Scrub the timeline to inspect any past state read-only, then return to live.
 - **Project memory.** “Remember that I prefer low poly.” — preferences and a collaboration persona (Adaptive co-designer, Visual designer, Geometry engineer, Design reviewer) persist across local sessions.
 
@@ -185,7 +187,7 @@ await window.webMCPStudio.callTool('edit_geometry', { operation: 'stretch', axis
 | **Control** | `undo_agent_changes` | Revert the latest reversible agent batch |
 | | `interrupt_agent_run` | Stop a live streamed run cleanly at an operation boundary |
 | **Collaborate** | `add_comment` | Attach a contextual annotation to a form |
-| **Sensitive** | `export_stl` | Permission-gated, approval-staged local STL download |
+| **Sensitive** | `export_stl` | Permission-gated, approval-staged local STL download — the file downloads and is attached to the chat as a re-downloadable card |
 | | `share_scene` | Permission-gated, approval-staged URL-fragment state link (no upload) |
 
 ---

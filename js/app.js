@@ -70,6 +70,9 @@ const els = {
   timeTravelCaption: $('#time-travel-caption'),
   exitTimeTravelButton: $('#exit-time-travel-btn'),
   exitTimeTravelCanvasButton: $('#exit-time-travel-canvas'),
+  canvasExpandBtn: $('#canvas-expand-btn'),
+  canvasCollapseBtn: $('#canvas-collapse-btn'),
+  downloadStlBtn: $('#download-stl-btn'),
   gestureHud: $('#gesture-hud'),
   gestureHudName: $('#gesture-hud-name'),
   preferenceChips: $('#preference-chips'),
@@ -176,6 +179,12 @@ function makeId(prefix = 'obj') {
 
 function titleCase(value) {
   return String(value || '').replace(/[-_]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function validColor(color) {
@@ -2545,7 +2554,15 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   hideBuildOverlay();
 
   // Side effects run only after the streamed model state is complete and remain proposal-gated.
-  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) exportSTL();
+  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) {
+    const file = exportSTL('agent');
+    if (file.success) {
+      addMessage('agent', `I exported the current shared scene — ${file.filename} is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
+      addFileCardMessage('agent', file);
+    } else {
+      addMessage('agent', `The export could not be completed: ${file.message}`);
+    }
+  }
   if (!interrupted && selectedActions.some((action) => action.kind === 'share')) await shareScene();
 
   renderProposal();
@@ -3439,7 +3456,12 @@ function exposeLocalBridge() {
 }
 
 /* Export and shared state */
-function exportSTL() {
+/*
+ * Produce a local STL from the visible scene and start the browser download.
+ * The object URL is intentionally kept alive for the session so the same file can
+ * be re-downloaded from its chat card; the browser reclaims it on reload.
+ */
+function exportSTL(source = 'human') {
   if (!viewportReady) return { success: false, message: 'STL export needs the 3D viewport, which is unavailable in this browser.' };
   if (!state.objects.length) {
     setCanvasMessage('Add a form before exporting');
@@ -3449,22 +3471,49 @@ function exportSTL() {
     const exporter = new STLExporter();
     const data = exporter.parse(modelGroup, { binary: true });
     const blob = new Blob([data], { type: 'model/stl' });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `orbit-model-${stamp}.stl`;
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `orbit-model-${new Date().toISOString().slice(0, 10)}.stl`;
+    anchor.download = filename;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 250);
-    addActivity('STL export initiated', 'A local STL file was prepared from the current shared scene.', 'human');
+    addActivity('STL export initiated', `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} STL from ${state.objects.length} form${state.objects.length === 1 ? '' : 's'}.`, source);
     showToast('STL download prepared');
-    return { success: true, message: 'STL export initiated.' };
+    return { success: true, message: 'STL export initiated.', filename, size: blob.size, url, object_count: state.objects.length };
   } catch (error) {
     console.error('STL export failed:', error);
     showToast('STL export could not be created', 'error');
     return { success: false, message: error.message };
   }
+}
+
+/*
+ * Attach the exported file to the conversation as a downloadable card, so a download
+ * (human or agent-initiated) remains reachable from the chat after the moment passes.
+ */
+function addFileCardMessage(role, file) {
+  const message = node('article', `message ${role === 'human' ? 'human-message' : 'agent-message'}`);
+  if (role !== 'human') message.append(node('div', 'message-avatar', '✦'));
+  const bubble = node('div', 'message-bubble');
+  bubble.append(node('span', 'message-label', role === 'human' ? 'You' : 'Orbit Agent'));
+  const card = node('div', 'export-card');
+  card.append(node('span', 'export-card-icon', '▦'));
+  const meta = node('div', 'export-card-meta');
+  meta.append(
+    node('strong', '', file.filename),
+    node('small', '', `${file.object_count} form${file.object_count === 1 ? '' : 's'} · ${formatBytes(file.size)} · local STL · nothing was uploaded`)
+  );
+  const link = node('a', 'export-card-link', 'Download ⤓');
+  link.href = file.url;
+  link.download = file.filename;
+  card.append(meta, link);
+  bubble.append(card);
+  message.append(bubble);
+  els.conversation.append(message);
+  requestAnimationFrame(() => { els.conversation.parentElement.scrollTop = els.conversation.parentElement.scrollHeight; });
 }
 
 function encodePayload(value) {
@@ -3616,14 +3665,41 @@ function bindEvents() {
    * The viewport is the primary surface, so it can take the full width on demand.
    * Manual controls collapse away rather than competing with the model.
    */
+  /*
+   * Full-space viewing: the canvas buttons (⤢ expand / ⤡ restore), the existing
+   * Viewport focus control and the V key all drive the same state, so every entry
+   * point stays in sync.
+   */
   const focusViewportButton = $('#focus-viewport-btn');
   const setViewportFocus = (active) => {
     document.body.classList.toggle('viewport-focus', active);
     focusViewportButton.setAttribute('aria-pressed', String(active));
     focusViewportButton.classList.toggle('active', active);
-    setCanvasMessage(active ? 'Viewport focus on — manual panels hidden' : 'Manual panels restored');
+    els.canvasExpandBtn.setAttribute('aria-pressed', String(active));
+    els.canvasExpandBtn.classList.toggle('active', active);
+    els.canvasCollapseBtn.setAttribute('aria-pressed', String(!active));
+    els.canvasCollapseBtn.classList.toggle('active', !active);
+    setCanvasMessage(active ? 'Full 3D space — manual panels hidden (⤡ or V restores them)' : 'Manual panels restored');
   };
   focusViewportButton.addEventListener('click', () => setViewportFocus(!document.body.classList.contains('viewport-focus')));
+  els.canvasExpandBtn.addEventListener('click', () => setViewportFocus(true));
+  els.canvasCollapseBtn.addEventListener('click', () => setViewportFocus(false));
+
+  // Manual STL download: a human-initiated export straight from the canvas toolbar.
+  els.downloadStlBtn.addEventListener('click', () => {
+    if (state.timeTravel.active) {
+      setCanvasMessage('Return to the live scene before exporting');
+      showToast('Time-travel preview is read-only', 'error');
+      return;
+    }
+    const file = exportSTL('human');
+    if (file.success) {
+      addFileCardMessage('human', file);
+      setCanvasMessage('STL download started — a copy stays attached in the chat');
+    } else if (file.message !== 'Scene is empty.') {
+      setCanvasMessage(file.message);
+    }
+  });
 
   els.agentForm.addEventListener('submit', (event) => { event.preventDefault(); handleAgentRequest(els.agentInput.value); });
   els.voiceButton.addEventListener('click', toggleVoiceInput);
