@@ -3,877 +3,389 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebMCP 3D Modeling Agentic Collaboration</title>
-  <link rel="stylesheet" href="css/style.css">
+  <meta name="theme-color" content="#090d1c">
+  <title>Orbit — WebMCP Co-design Studio</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <div id="app">
-    <!-- Collaboration Status Bar -->
-    <div id="collab-bar" class="collab-bar">
-      <span id="collab-status" class="collab-status">🤖 Agent ready — ready for collaboration</span>
-      <button id="accept-agent-btn" class="accept-agent-btn hidden">Accept Suggestion</button>
-      <button id="reject-agent-btn" class="reject-agent-btn">Reject</button>
+  <div class="ambient ambient-violet"></div>
+  <div class="ambient ambient-mint"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Orbit co-design studio home">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span>
+          <strong>orbit</strong>
+          <small>WebMCP co-design studio</small>
+        </span>
+      </a>
+
+      <div class="topbar-center">
+        <span class="live-dot"></span>
+        <span id="top-status">Agent ready</span>
+        <span class="topbar-divider"></span>
+        <span id="object-count-top">0 objects</span>
+      </div>
+
+      <div class="top-actions">
+        <button id="review-btn" class="button button-quiet" type="button">
+          <span class="button-icon">✦</span> Design review
+        </button>
+        <button id="checkpoint-btn" class="button button-quiet" type="button">
+          <span class="button-icon">⌘</span> Checkpoint
+        </button>
+        <button id="export-btn" class="button button-primary" type="button">
+          Export <span aria-hidden="true">↗</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="studio-layout">
+      <aside class="sidebar left-sidebar" aria-label="Scene controls">
+        <section class="sidebar-section scene-section">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Workspace</span>
+              <h2>Scene outline</h2>
+            </div>
+            <button id="focus-scene-btn" class="icon-button" type="button" aria-label="Focus complete scene" title="Focus complete scene">⌖</button>
+          </div>
+          <div class="scene-summary">
+            <span class="scene-summary-orb"></span>
+            <span id="scene-summary-text">Ready for an idea</span>
+            <span id="scene-summary-count">00</span>
+          </div>
+          <div id="object-list" class="object-list" aria-live="polite"></div>
+        </section>
+
+        <section class="sidebar-section add-section">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Build by hand</span>
+              <h2>Primitive library</h2>
+            </div>
+          </div>
+          <div class="primitive-grid">
+            <button class="primitive-button" type="button" data-add="cube"><span class="primitive-icon cube-icon"></span><span>Cube</span></button>
+            <button class="primitive-button" type="button" data-add="sphere"><span class="primitive-icon sphere-icon"></span><span>Sphere</span></button>
+            <button class="primitive-button" type="button" data-add="cylinder"><span class="primitive-icon cylinder-icon"></span><span>Cylinder</span></button>
+            <button class="primitive-button" type="button" data-add="cone"><span class="primitive-icon cone-icon"></span><span>Cone</span></button>
+            <button class="primitive-button" type="button" data-add="torus"><span class="primitive-icon torus-icon"></span><span>Torus</span></button>
+            <button class="primitive-button" type="button" data-add="plane"><span class="primitive-icon plane-icon"></span><span>Plane</span></button>
+          </div>
+        </section>
+
+        <section class="sidebar-section inspector-section">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Selection</span>
+              <h2>Object inspector</h2>
+            </div>
+            <span id="selected-status" class="selection-status">None</span>
+          </div>
+
+          <div id="inspector-empty" class="inspector-empty">
+            <span class="empty-select-icon">⌁</span>
+            Select an object on the canvas to inspect and refine it.
+          </div>
+
+          <div id="inspector-content" class="inspector-content hidden">
+            <label class="input-label">Name
+              <input id="object-name-input" class="text-input" maxlength="48" autocomplete="off">
+            </label>
+            <div class="object-meta-row">
+              <span id="object-type-badge" class="object-type-badge">Cube</span>
+              <span id="object-id-label" class="object-id-label"></span>
+            </div>
+
+            <div class="transform-block">
+              <div class="property-title"><span>Position</span><small>units</small></div>
+              <div class="vector-inputs">
+                <label><b>X</b><input class="number-input" data-transform="position" data-axis="0" type="number" step="0.1"></label>
+                <label><b>Y</b><input class="number-input" data-transform="position" data-axis="1" type="number" step="0.1"></label>
+                <label><b>Z</b><input class="number-input" data-transform="position" data-axis="2" type="number" step="0.1"></label>
+              </div>
+            </div>
+            <div class="transform-block">
+              <div class="property-title"><span>Scale</span><small>ratio</small></div>
+              <div class="vector-inputs">
+                <label><b>X</b><input class="number-input" data-transform="scale" data-axis="0" type="number" min="0.05" step="0.1"></label>
+                <label><b>Y</b><input class="number-input" data-transform="scale" data-axis="1" type="number" min="0.05" step="0.1"></label>
+                <label><b>Z</b><input class="number-input" data-transform="scale" data-axis="2" type="number" min="0.05" step="0.1"></label>
+              </div>
+            </div>
+
+            <div class="material-block">
+              <div class="property-title"><span>Finish</span><small>appearance</small></div>
+              <div class="material-chips">
+                <button type="button" data-material="metal">Metal</button>
+                <button type="button" data-material="plastic">Soft</button>
+                <button type="button" data-material="glass">Glass</button>
+                <button type="button" data-material="emissive">Glow</button>
+              </div>
+              <div class="color-row" aria-label="Object color">
+                <button class="color-swatch swatch-violet" type="button" data-color="#8876ff" aria-label="Violet"></button>
+                <button class="color-swatch swatch-mint" type="button" data-color="#52dfc3" aria-label="Mint"></button>
+                <button class="color-swatch swatch-peach" type="button" data-color="#ff9c75" aria-label="Peach"></button>
+                <input id="object-color-input" type="color" value="#8876ff" aria-label="Choose a custom object color">
+              </div>
+            </div>
+
+            <div class="inspector-actions">
+              <button id="duplicate-btn" class="button button-small button-quiet" type="button">Duplicate</button>
+              <button id="delete-btn" class="button button-small button-danger" type="button">Delete</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="sidebar-section constraint-section">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Guardrails</span>
+              <h2>Design constraints</h2>
+            </div>
+            <button id="validate-constraints-btn" class="text-button" type="button">Check</button>
+          </div>
+          <div class="constraint-actions">
+            <button class="constraint-button" type="button" data-constraint="symmetry">↔ Symmetry</button>
+            <button class="constraint-button" type="button" data-constraint="ground">⌄ On ground</button>
+          </div>
+          <div id="constraint-list" class="constraint-list"></div>
+        </section>
+
+        <section class="sidebar-section annotations-section">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Collaborate in context</span>
+              <h2>Annotations</h2>
+            </div>
+          </div>
+          <div class="annotation-composer">
+            <input id="comment-input" class="text-input" maxlength="160" placeholder="Leave feedback on selection…" autocomplete="off">
+            <button id="add-comment-btn" class="icon-button icon-button-filled" type="button" aria-label="Add annotation">↑</button>
+          </div>
+          <div id="comment-list" class="comment-list"></div>
+        </section>
+      </aside>
+
+      <section class="canvas-column" aria-label="3D design canvas">
+        <div class="canvas-frame">
+          <div id="canvas-container" aria-label="Interactive 3D model canvas"></div>
+          <div class="canvas-scanlines" aria-hidden="true"></div>
+
+          <div class="canvas-top-hud">
+            <div class="canvas-label"><span class="canvas-label-dot"></span> Live canvas</div>
+            <div class="camera-readout"><span>CAM</span> <span id="camera-readout">ISO 02</span></div>
+          </div>
+
+          <div id="empty-canvas" class="empty-canvas">
+            <div class="empty-orbit"><i></i><i></i><i></i></div>
+            <div>
+              <span class="eyebrow">Human + agent workspace</span>
+              <h1>Start with a vision,<br>then shape it together.</h1>
+              <p>Describe a design, approve the plan, and stay in control of every change.</p>
+              <button id="empty-start-btn" class="button button-primary" type="button">Design a delivery drone <span>↗</span></button>
+            </div>
+          </div>
+
+          <div id="selection-hud" class="selection-hud hidden">
+            <span class="selection-hud-dot"></span>
+            <span id="selection-hud-name">Object</span>
+            <span class="selection-hud-key">selected</span>
+          </div>
+
+          <div id="agent-build-overlay" class="agent-build-overlay hidden" aria-live="polite">
+            <span class="eyebrow">Live agent build</span>
+            <strong id="agent-build-step">Preparing shared scene…</strong>
+            <div class="build-progress"><i id="agent-build-progress"></i></div>
+            <small id="agent-build-count">0 / 0 operations</small>
+          </div>
+
+          <div id="time-travel-overlay" class="time-travel-overlay hidden" aria-live="polite">
+            <span class="eyebrow">Time-travel preview</span>
+            <strong id="time-travel-overlay-title">Inspecting a past scene state</strong>
+            <small>Edits are paused until you return to live.</small>
+            <button id="exit-time-travel-canvas" type="button">Return to live ↗</button>
+          </div>
+
+          <div id="gesture-hud" class="gesture-hud" aria-live="polite">
+            <span>⌖</span><strong id="gesture-hud-name">Point at a form to ground “that”</strong>
+          </div>
+
+          <div class="canvas-bottom-hud">
+            <span><kbd>drag</kbd> orbit</span>
+            <span><kbd>⇧ drag</kbd> move</span>
+            <span><kbd>scroll</kbd> zoom</span>
+            <span><kbd>click</kbd> select</span>
+          </div>
+        </div>
+
+        <div class="canvas-toolbar">
+          <div class="mode-switch" role="group" aria-label="Agent interaction mode">
+            <button type="button" data-mode="planning" class="active"><span></span> Planning</button>
+            <button type="button" data-mode="direct"><span></span> Direct</button>
+          </div>
+          <div class="toolbar-divider"></div>
+          <button id="fit-view-btn" class="toolbar-button" type="button">Fit scene</button>
+          <button id="grid-snap-btn" class="toolbar-button" type="button">Snap selection</button>
+          <button id="reset-view-btn" class="toolbar-button" type="button">Reset view</button>
+          <span id="canvas-message" class="canvas-message" aria-live="polite"></span>
+        </div>
+
+        <section class="version-rail" aria-label="Design versions">
+          <div class="version-rail-heading"><span class="eyebrow">Versions</span><span class="version-line"></span></div>
+          <div id="version-list" class="version-list"></div>
+          <button id="new-version-btn" class="new-version-button" type="button"><span>+</span> Save checkpoint</button>
+        </section>
+      </section>
+
+      <aside class="sidebar agent-sidebar" aria-label="Agent collaboration panel">
+        <div class="agent-header">
+          <div class="agent-avatar"><span>✦</span></div>
+          <div>
+            <span class="eyebrow">Your co-designer</span>
+            <h2>Orbit Agent</h2>
+          </div>
+          <button id="permissions-btn" class="icon-button" type="button" aria-label="Agent permissions" title="Agent permissions">⚙</button>
+        </div>
+
+        <div id="agent-status-card" class="agent-status-card ready">
+          <span class="status-orb"><i></i></span>
+          <div>
+            <strong id="agent-status-title">Ready to collaborate</strong>
+            <p id="agent-status-copy">I can inspect, plan, build, and review with you.</p>
+          </div>
+        </div>
+
+        <div id="selection-context" class="selection-context" title="This context updates whenever the human changes the selection or points at a form.">
+          <span>Live selection relay</span>
+          <strong id="selection-context-value">No object selected</strong>
+          <small id="selection-context-revision">context v0</small>
+          <div class="memory-inline">
+            <span>Project memory</span>
+            <label class="persona-select-label">Role
+              <select id="persona-select" aria-label="Orbit project persona">
+                <option value="Adaptive co-designer">Adaptive</option>
+                <option value="Visual designer">Designer</option>
+                <option value="Geometry engineer">Engineer</option>
+                <option value="Design reviewer">Reviewer</option>
+              </select>
+            </label>
+            <div id="preference-chips" class="preference-chips"></div>
+            <button id="teach-agent-btn" type="button">Teach Orbit</button>
+          </div>
+        </div>
+
+        <div class="agent-tabs" role="tablist" aria-label="Collaboration views">
+          <button class="agent-tab active" type="button" data-agent-tab="plan" role="tab" aria-selected="true">Plan <span id="plan-count">1</span></button>
+          <button class="agent-tab" type="button" data-agent-tab="activity" role="tab" aria-selected="false">Activity <span id="activity-count">0</span></button>
+        </div>
+
+        <div class="agent-panel-content">
+          <div id="plan-panel" class="agent-tab-panel">
+            <div id="conversation" class="conversation" aria-live="polite">
+              <article class="message agent-message intro-message">
+                <div class="message-avatar">✦</div>
+                <div class="message-bubble">
+                  <span class="message-label">Orbit Agent</span>
+                  <p>I’ll turn your direction into a clear, reversible design plan. What are we building?</p>
+                </div>
+              </article>
+            </div>
+            <div id="proposal-slot" class="proposal-slot"></div>
+            <div class="quick-ideas">
+              <span>Try an idea</span>
+              <button type="button" data-prompt="Design a compact futuristic delivery drone">Delivery drone</button>
+              <button type="button" data-prompt="Create a symmetrical metallic rocket with four fins">Rocket</button>
+              <button type="button" data-prompt="Review this scene and suggest improvements">Review scene</button>
+            </div>
+          </div>
+
+          <div id="activity-panel" class="agent-tab-panel hidden">
+            <div class="activity-header"><span>Auditable action timeline</span><button id="clear-activity-btn" class="text-button" type="button">Clear</button></div>
+            <div class="timeline-scrubber">
+              <div><span>Time-travel inspector</span><button id="exit-time-travel-btn" class="text-button hidden" type="button">Return live</button></div>
+              <input id="time-travel-range" type="range" min="0" max="0" value="0" aria-label="Scrub agent and human activity timeline">
+              <p id="time-travel-caption">Select a timeline event to inspect its scene snapshot.</p>
+            </div>
+            <div id="activity-list" class="activity-list"></div>
+          </div>
+        </div>
+
+        <form id="agent-composer" class="agent-composer">
+          <label class="composer-label" for="agent-input">Direct the agent</label>
+          <div class="composer-row">
+            <textarea id="agent-input" rows="2" maxlength="500" placeholder="e.g. Make the body more aerodynamic…"></textarea>
+            <button id="voice-agent-btn" class="voice-button" type="button" aria-label="Speak a direction to Orbit" title="Speak a direction to Orbit"><span>⌁</span></button>
+            <button id="send-agent-btn" class="send-button" type="submit" aria-label="Send direction to agent"><span>↑</span></button>
+          </div>
+          <div class="composer-footer"><span id="mode-hint">Planning mode — changes need your approval.</span><span id="voice-status">⌁ Voice + hover grounding ready</span></div>
+        </form>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <span><i class="footer-dot"></i> Shared scene state is live</span>
+      <span>Observe → Plan → Approve → Act → Verify</span>
+      <span id="webmcp-footer-status">Preparing WebMCP tools…</span>
+    </footer>
+  </div>
+
+  <div id="permissions-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="permissions-title">
+    <div class="modal-card permissions-card">
+      <button class="modal-close" type="button" data-close-modal="permissions-modal" aria-label="Close permissions">×</button>
+      <span class="eyebrow">Human control</span>
+      <h2 id="permissions-title">Agent permissions</h2>
+      <p>Choose an autonomy tier for everyday edits. Destructive, export, and sharing requests always remain visible approval steps—even when permission is enabled.</p>
+      <div class="permission-tier-card">
+        <span>Current tier</span>
+        <strong id="permission-tier-label">Guided creation</strong>
+        <small id="permission-tier-copy">Orbit may prepare create and modify work; you approve every plan.</small>
+      </div>
+      <div class="permission-presets" role="group" aria-label="Quick agent permission tiers">
+        <span>Quick tiers</span>
+        <button type="button" data-permission-preset="observe">Observe</button>
+        <button type="button" data-permission-preset="guided">Guided</button>
+        <button type="button" data-permission-preset="full">Full*</button>
+      </div>
+      <div class="permission-list">
+        <label class="permission-row"><span><strong>Read scene</strong><small>Inspect objects, context, and history</small></span><input type="checkbox" data-permission="read" checked><i></i></label>
+        <label class="permission-row"><span><strong>Create objects</strong><small>Prepare new primitives and composites</small></span><input type="checkbox" data-permission="create" checked><i></i></label>
+        <label class="permission-row"><span><strong>Modify objects</strong><small>Prepare transforms and materials</small></span><input type="checkbox" data-permission="modify" checked><i></i></label>
+        <label class="permission-row"><span><strong>Delete objects</strong><small>Stage removals for your approval</small></span><input type="checkbox" data-permission="delete"><i></i></label>
+        <label class="permission-row"><span><strong>Export model</strong><small>Request an STL export</small></span><input type="checkbox" data-permission="export"><i></i></label>
+        <label class="permission-row"><span><strong>Share scene</strong><small>Request a transferable scene link</small></span><input type="checkbox" data-permission="share"><i></i></label>
+      </div>
+      <button class="button button-primary modal-done" type="button" data-close-modal="permissions-modal">Done</button>
     </div>
+  </div>
 
-    <!-- 3D Canvas -->
-    <div id="canvas-container"></div>
-
-    <!-- Right Panel: Tools & Properties -->
-    <div id="right-panel" class="panel">
-      <div class="panel-section">
-        <h3>➕ Add Primitive</h3>
-        <div class="tool-grid">
-          <button class="tool-btn" data-primitive="cube">Cube</button>
-          <button class="tool-btn" data-primitive="sphere">Sphere</button>
-          <button class="tool-btn" data-primitive="cylinder">Cylinder</button>
-          <button class="tool-btn" data-primitive="cone">Cone</button>
-          <button class="tool-btn" data-primitive="plane">Plane</button>
-        </div>
+  <div id="review-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="review-title">
+    <div class="modal-card review-card">
+      <button class="modal-close" type="button" data-close-modal="review-modal" aria-label="Close review">×</button>
+      <div class="review-heading">
+        <div><span class="eyebrow">Agent analysis</span><h2 id="review-title">Design review</h2></div>
+        <div id="review-score" class="review-score">—</div>
       </div>
-
-      <div class="panel-section">
-        <h3>🛠️ Transform</h3>
-        <div class="tool-grid">
-          <button class="tool-btn" data-action="move">Move</button>
-          <button class="tool-btn" data-action="rotate">Rotate</button>
-          <button class="tool-btn" data-action="scale">Scale</button>
-        </div>
-      </div>
-
-      <div class="panel-section">
-        <h3>✏️ Material</h3>
-        <div class="tool-grid">
-          <button class="tool-btn" data-material="metal">Metal</button>
-          <button class="tool-btn" data-material="plastic">Plastic</button>
-          <button class="tool-btn" data-material="glass">Glass</button>
-          <button class="tool-btn" data-material="wood">Wood</button>
-          <button class="tool-btn" data-material="emissive">Emissive</button>
-        </div>
-      </div>
-
-      <div class="panel-section">
-        <h3>🎛️ Controls</h3>
-        <div class="tool-grid">
-          <button class="tool-btn" onclick="snapToGrid()">Grid Snap</button>
-          <button class="tool-btn" onclick="resetView()">Reset View</button>
-          <button class="tool-btn" onclick="exportSTL()">Export STL</button>
-          <button class="tool-btn" onclick="shareSession()">Share Link</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Bottom Panel: Undo/Redo & History -->
-    <div id="bottom-panel" class="panel">
-      <div class="panel-section">
-        <h3>↩️ Undo / Redo</h3>
-        <div class="undo-redo">
-          <button id="undo-btn" class="undo-btn" disabled>Undo</button>
-          <button id="redo-btn" class="redo-btn" disabled>Redo</button>
-        </div>
-      </div>
-
-      <div class="panel-section">
-        <h3>📜 History (click to snap)</h3>
-        <div id="history-list" class="history-list"></div>
+      <p id="review-summary" class="review-summary">Add a model to receive a visual and geometric review.</p>
+      <div id="review-metrics" class="review-metrics"></div>
+      <div id="review-metric-detail" class="metric-drilldown" aria-live="polite">Select a score to inspect the evidence behind it.</div>
+      <div id="review-findings" class="review-findings"></div>
+      <div class="review-actions">
+        <button id="apply-review-btn" class="button button-primary hidden" type="button">Prepare improvements</button>
+        <button class="button button-quiet" type="button" data-close-modal="review-modal">Close</button>
       </div>
     </div>
   </div>
 
-  <!-- WebMCP Agent Tools Status -->
-  <div id="webmcp-status" class="webmcp-status hidden">
-    WebMCP Tools Registered: <span id="webmcp-tool-count"></span>
-  </div>
+  <div id="webmcp-toast" class="webmcp-toast" role="status" aria-live="polite"><span class="toast-dot"></span><span id="webmcp-toast-copy">Preparing studio…</span></div>
 
-  <script type="module">
-    // ============================
-    // Import Three.js via CDN
-    // ============================
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.0/build/three.module.js';
-    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/controls/OrbitControls.js';
-    import { STLExporter } from 'https://cdn.jsdelivr.net/npm/three@0.164.0/examples/jsm/exporters/STLExporter.js';
-
-    // ============================
-    // Application State
-    // ============================
-    const state = {
-      objects: [],        // Array of {id, type, position, rotation, scale, material}
-      cameraPos: new THREE.Vector3(0, 2, 5),
-      selectedId: null,
-      undoStack: [],
-      redoStack: [],
-      maxStackSize: 50,
-      agentLastChange: null
-    };
-
-    // ============================
-    // Three.js Setup
-    // ============================
-    let scene, camera, renderer, controls;
-
-    function initThree() {
-      const container = document.getElementById('canvas-container');
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xf0f0f0);
-
-      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-      camera.position.set(0, 2, 5);
-
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      container.appendChild(renderer.domElement);
-
-      controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-      controls.maxPolarAngle = Math.PI / 2.1;
-
-      // Grid helper
-      const grid = new THREE.GridHelper(10, 10, 0x888888, 0xcccccc);
-      scene.add(grid);
-
-      // Axes helper
-      const axes = new THREE.AxesHelper(3);
-      scene.add(axes);
-
-      // Light
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
-      scene.add(hemi);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      dirLight.position.set(5, 10, 7.5);
-      scene.add(dirLight);
-
-      // Handle resize
-      window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-      });
-
-      // Mouse events on canvas
-      renderer.domElement.addEventListener('click', onCanvasClick);
-      renderer.domElement.addEventListener('mousedown', onMouseDown);
-      renderer.domElement.addEventListener('mouseup', onMouseUp);
-      renderer.domElement.addEventListener('mousemove', onMouseMove);
-
-      // Keyboard
-      window.addEventListener('keydown', onKeyDown);
-
-      render();
-    }
-
-    function render() {
-      controls.update();
-      renderer.render(scene, camera);
-      requestAnimationFrame(render);
-    }
-
-    // ============================
-    // Model State Management
-    // ============================
-    function generateId() {
-      return 'obj_' + Math.random().toString(36).substr(2, 9);
-    }
-
-    function getSelectedObject() {
-      return state.objects.find(o => o.id === state.selectedId);
-    }
-
-    // --- Clean Undo/Redo State Management ---
-
-    // Saves the CURRENT state to the undo stack and clears redo stack.
-    // Call this BEFORE making a change to the model state.
-    function beginUndoBatch(changeType) {
-      if (state.undoStack.length >= state.maxStackSize) {
-        state.undoStack.shift();
-      }
-      state.undoStack.push({
-        type: changeType,
-        objects: JSON.parse(JSON.stringify(state.objects)),
-        timestamp: Date.now()
-      });
-      state.redoStack = []; // clear redo on new undo
-      updateUndoRedoButtons();
-    }
-
-    function endUndoBatch() {
-      // No-op placeholder for symmetry; actual save happens in beginUndoBatch
-    }
-
-    function commitUndo() {
-      if (state.undoStack.length === 0) return null;
-      const last = state.undoStack.pop();
-      // Save current state to redo stack
-      state.redoStack.push({
-        type: 'redo',
-        objects: JSON.parse(JSON.stringify(state.objects)),
-        timestamp: Date.now()
-      });
-      // Restore the state from the undo snapshot
-      state.objects = last.objects;
-      updateUI();
-      updateHistory();
-      return last;
-    }
-
-    function commitRedo() {
-      if (state.redoStack.length === 0) return null;
-      const last = state.redoStack.pop();
-      // Save current state to undo stack
-      state.undoStack.push({
-        type: 'undo',
-        objects: JSON.parse(JSON.stringify(state.objects)),
-        timestamp: Date.now()
-      });
-      // Restore the state from the redo snapshot
-      state.objects = last.objects;
-      updateUI();
-      updateHistory();
-    }
-
-    function updateUndoRedoButtons() {
-      const undoBtn = document.getElementById('undo-btn');
-      const redoBtn = document.getElementById('redo-btn');
-      undoBtn.disabled = state.undoStack.length === 0;
-      redoBtn.disabled = state.redoStack.length === 0;
-    }
-
-    // ============================
-    // UI Update Functions
-    // ============================
-    function updateScene() {
-      // Remove existing objects from scene (except grid/axes)
-      scene.traverse(child => {
-        if (child.userData.isThreeObj) scene.remove(child);
-      });
-
-      // Add current state objects
-      state.objects.forEach(obj => {
-        const geometry = getGeometry(obj.type);
-        const material = getMaterial(obj.material);
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.userData.isThreeObj = true;
-        mesh.id = obj.id;
-        mesh.position.set(...obj.position);
-        mesh.rotation.set(...obj.rotation);
-        mesh.scale.set(...obj.scale);
-        scene.add(mesh);
-      });
-
-      updateHistory();
-      render();
-    }
-
-    function getGeometry(type) {
-      const dict = {
-        cube: new THREE.BoxGeometry(1, 1, 1),
-        sphere: new THREE.SphereGeometry(0.5, 32, 32),
-        cylinder: new THREE.CylinderGeometry(0.5, 0.5, 1, 32),
-        cone: new THREE.ConeGeometry(0.5, 1, 32),
-        plane: new THREE.PlaneGeometry(5, 5)
-      };
-      return (dict[type] || dict.cube);
-    }
-
-    function getMaterial(name) {
-      const dict = {
-        metal: new THREE.MeshStandardMaterial({ color: 0x8c98ff, metalness: 0.8, roughness: 0.2 }),
-        plastic: new THREE.MeshStandardMaterial({ color: 0xffd580, metalness: 0.2, roughness: 0.8 }),
-        glass: new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.0, roughness: 0.1, transparent: true, opacity: 0.6 }),
-        wood: new THREE.MeshStandardMaterial({ color: 0xdeb483, metalness: 0.1, roughness: 0.9 }),
-        emissive: new THREE.MeshStandardMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 1.0, metalness: 0.0, roughness: 0.0 })
-      };
-      return (dict[name] || dict.plastic);
-    }
-
-    function updateUI() {
-      document.getElementById('undo-btn').disabled = state.undoStack.length === 0;
-      document.getElementById('redo-btn').disabled = state.redoStack.length === 0;
-      updateHistory();
-    }
-
-    function updateHistory() {
-      const list = document.getElementById('history-list');
-      list.innerHTML = '';
-      // Show last 20 snapshot timestamps/ops
-      const history = [...state.undoStack].reverse().slice(0, 20).concat([...state.redoStack].reverse().slice(0, 20));
-      history.forEach(entry => {
-        const btn = document.createElement('button');
-        btn.className = 'history-btn';
-        btn.textContent = `${entry.type} @ ${new Date(entry.timestamp).toLocaleTimeString()}`;
-        btn.onclick = () => snapToSnapshot(entry);
-        list.appendChild(btn);
-      });
-    }
-
-    function snapToSnapshot(entry) {
-      // Directly restore the state from the snapshot entry
-      state.objects = JSON.parse(JSON.stringify(entry.objects));
-      updateScene();
-      updateUI();
-      updateHistory();
-    }
-
-    // ============================
-    // Human UI Actions
-    // ============================
-    function onCanvasClick(event) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = (event.clientX - rect.left) / rect.width * 2 - 1;
-      const y = -(event.clientY - rect.top) / rect.height * 2 + 1;
-
-      // Raycast from camera
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
-      const intersects = raycaster.intersectObjects(
-        scene.children.filter(c => c.userData && c.userData.isThreeObj)
-      );
-
-      if (intersects.length > 0) {
-        const mesh = intersects[0];
-        state.selectedId = mesh.id;
-        // Highlight selected
-        scene.traverse(child => {
-          if (child.userData.isThreeObj) {
-            child.material.emissive = new THREE.Color(0x333333);
-          }
-        });
-        mesh.material.emissive = new THREE.Color(0xffd700);
-        updateUI();
-      } else {
-        state.selectedId = null;
-        updateUI();
-      }
-    }
-
-    function onMouseDown(event) {
-      // Support for orbit with modifier instructions
-    }
-
-    function onMouseUp(event) {
-      // No auto-undo on mouse release — only explicit actions (keys, agent tools)
-    }
-
-    function onMouseMove(event) {
-      // Continuous transform feedback
-    }
-
-    function onKeyDown(event) {
-      if (!state.selectedId) return;
-      const step = 0.1;
-      const rotStep = Math.PI / 12; // 15 degrees
-      const scaleStep = 0.1;
-
-      // Begin undo batch before making changes
-      beginUndoBatch('human_move');
-
-      switch(event.key) {
-        case 'ArrowLeft': moveSelected(-step, 0, 0); break;
-        case 'ArrowRight': moveSelected(step, 0, 0); break;
-        case 'ArrowUp': moveSelected(0, step, 0); break;
-        case 'ArrowDown': moveSelected(0, -step, 0); break;
-        case '=': case '+': scaleSelected(scaleStep); break;
-        case '-': scaleSelected(-scaleStep); break;
-        case 'r': rotateSelected('x', rotStep); break;
-        case 'R': rotateSelected('y', rotStep); break;
-        case 't': moveSelected(0, 0, step); break; // forward
-      }
-
-      // Commit the undo (finalize the snapshot)
-      commitUndo();
-      updateScene();
-    }
-
-    function moveSelected(dx, dy, dz) {
-      const obj = getSelectedObject();
-      if (!obj) return;
-      obj.position = [
-        (obj.position[0] || 0) + dx,
-        (obj.position[1] || 0) + dy,
-        (obj.position[2] || 0) + dz
-      ];
-    }
-
-    function rotateSelected(axis, degrees) {
-      const obj = getSelectedObject();
-      if (!obj) return;
-      const rad = (degrees * Math.PI) / 180;
-      if (axis === 'x') obj.rotation[0] = (obj.rotation[0] || 0) + rad;
-      if (axis === 'y') obj.rotation[1] = (obj.rotation[1] || 0) + rad;
-      if (axis === 'z') obj.rotation[2] = (obj.rotation[2] || 0) + rad;
-    }
-
-    function scaleSelected(factor) {
-      const obj = getSelectedObject();
-      if (!obj) return;
-      const currentScale = obj.scale[0] || 1;
-      obj.scale = [currentScale + factor, currentScale + factor, currentScale + factor];
-    }
-
-    function snapToGrid() {
-      const obj = getSelectedObject();
-      if (!obj) return;
-      // Snap position to nearest 1
-      obj.position = obj.position.map(p => Math.round(p));
-      // Snap rotation to 15-degree multiples
-      obj.rotation = obj.rotation.map(r => Math.round(r / (Math.PI/12)) * (Math.PI/12));
-      updateScene();
-    }
-
-    function resetView() {
-      controls.reset();
-      controls.target.set(0, 0, 0);
-    }
-
-    function exportSTL() {
-      const exporter = new STLExporter();
-      const serializer = new XMLSerializer();
-      const stlData = exporter.parse(scene);
-      const blob = new Blob([serializer.serializeString(stlData)], { type: 'application/slash-stl' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `webmcp-model-${Date.now()}.stl`;
-      a.click();
-      URL.revokeObjectURL(url);
-    }
-
-    function shareSession() {
-      const stateJson = JSON.stringify(state);
-      const base64 = btoa(stateJson);
-      const link = `${window.location.origin}/?model=${base64}`;
-      prompt('Share this link with yourself or the agent:', link);
-    }
-
-    // ============================
-    // WebMCP Agent Tool Registration
-    // ============================
-    async function registerWebMCPTools() {
-      if (!navigator.modelContext) {
-        showWebMCPStatus('WebMCP not supported in this browser yet', 'error');
-        return;
-      }
-
-      try {
-        // Register move_object tool
-        await navigator.modelContext.addTool({
-          name: 'move_object',
-          description: 'Move an object along an axis',
-          parameters: {
-            type: 'object',
-            properties: {
-              object_id: { type: 'string' },
-              axis: { type: 'string', enum: ['x', 'y', 'z'] },
-              distance: { type: 'number' }
-            },
-            required: ['object_id', 'axis', 'distance']
-          },
-          execute: async ({ object_id, axis, distance }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('agent_move');
-
-            // Execute in page context
-            const obj = state.objects.find(o => o.id === object_id);
-            if (!obj) throw new Error(`Object ${object_id} not found`);
-
-            const delta = distance / 100; // normalize to scene units
-            if (axis === 'x') obj.position[0] = (obj.position[0] || 0) + delta;
-            if (axis === 'y') obj.position[1] = (obj.position[1] || 0) + delta;
-            if (axis === 'z') obj.position[2] = (obj.position[2] || 0) + delta;
-
-            // Record as agent change
-            state.agentLastChange = { tool: 'move_object', object_id, axis, distance };
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-
-            return { success: true, message: 'Object moved' };
-          }
-        });
-
-        // Register rotate_object tool
-        await navigator.modelContext.addTool({
-          name: 'rotate_object',
-          description: 'Rotate an object on an axis',
-          parameters: {
-            type: 'object',
-            properties: {
-              object_id: { type: 'string' },
-              axis: { type: 'string', enum: ['x', 'y', 'z'] },
-              degrees: { type: 'number' }
-            },
-            required: ['object_id', 'axis', 'degrees']
-          },
-          execute: async ({ object_id, axis, degrees }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('agent_rotate');
-
-            const obj = state.objects.find(o => o.id === object_id);
-            if (!obj) throw new Error(`Object ${object_id} not found`);
-
-            const rad = (degrees * Math.PI) / 180;
-            if (axis === 'x') obj.rotation[0] = (obj.rotation[0] || 0) + rad;
-            if (axis === 'y') obj.rotation[1] = (obj.rotation[1] || 0) + rad;
-            if (axis === 'z') obj.rotation[2] = (obj.rotation[2] || 0) + rad;
-
-            state.agentLastChange = { tool: 'rotate_object', object_id, axis, degrees };
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-
-            return { success: true, message: 'Object rotated' };
-          }
-        });
-
-        // Register scale_object tool
-        await navigator.modelContext.addTool({
-          name: 'scale_object',
-          description: 'Scale an object uniformly or per-axis',
-          parameters: {
-            type: 'object',
-            properties: {
-              object_id: { type: 'string' },
-              uniform: { type: 'boolean' },
-              factor: { type: 'number' }
-            },
-            required: ['object_id', 'uniform', 'factor']
-          },
-          execute: async ({ object_id, uniform, factor }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('agent_scale');
-
-            const obj = state.objects.find(o => o.id === object_id);
-            if (!obj) throw new Error(`Object ${object_id} not found`);
-
-            if (uniform) {
-              obj.scale = [obj.scale[0] * factor, obj.scale[1] * factor, obj.scale[2] * factor];
-            } else {
-              if (!obj.scale) obj.scale = [1, 1, 1];
-              obj.scale[0] *= factor;
-              obj.scale[1] *= factor;
-              obj.scale[2] *= factor;
-            }
-
-            state.agentLastChange = { tool: 'scale_object', object_id, uniform, factor };
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-
-            return { success: true, message: 'Object scaled' };
-          }
-        });
-
-        // Register add_primitive tool
-        await navigator.modelContext.addTool({
-          name: 'add_primitive',
-          description: 'Add a new primitive shape to the scene',
-          parameters: {
-            type: 'object',
-            properties: {
-              type: { type: 'string', enum: ['cube', 'sphere', 'cylinder', 'cone', 'plane'] }
-            },
-            required: ['type']
-          },
-          execute: async ({ type }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('human_add');
-
-            const id = generateId();
-            state.objects.push({
-              id,
-              type,
-              position: [0, 0, 0],
-              rotation: [0, 0, 0],
-              scale: [1, 1, 1],
-              material: 'plastic'
-            });
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-            return { success: true, message: `Added ${type}`, objectId: id };
-          }
-        });
-
-        // Register remove_object tool
-        await navigator.modelContext.addTool({
-          name: 'remove_object',
-          description: 'Remove an object from the scene',
-          parameters: {
-            type: 'object',
-            properties: {
-              object_id: { type: 'string' }
-            },
-            required: ['object_id']
-          },
-          execute: async ({ object_id }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('human_remove');
-
-            const idx = state.objects.findIndex(o => o.id === object_id);
-            if (idx === -1) throw new Error(`Object ${object_id} not found`);
-
-            const removed = state.objects.splice(idx, 1)[0];
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-            return { success: true, message: `Removed ${object_id}` };
-          }
-        });
-
-        // Register set_material tool
-        await navigator.modelContext.addTool({
-          name: 'set_material',
-          description: 'Apply color/material to an object',
-          parameters: {
-            type: 'object',
-            properties: {
-              object_id: { type: 'string' },
-              material: { type: 'string', enum: ['metal', 'plastic', 'glass', 'wood', 'emissive'] }
-            },
-            required: ['object_id', 'material']
-          },
-          execute: async ({ object_id, material }) => {
-            // Begin undo batch before making changes
-            beginUndoBatch('human_material');
-
-            const obj = state.objects.find(o => o.id === object_id);
-            if (!obj) throw new Error(`Object ${object_id} not found`);
-
-            obj.material = material;
-
-            // Commit the undo
-            commitUndo();
-            updateScene();
-            return { success: true, message: `Material set to ${material}` };
-          }
-        });
-
-        // Register undo_agent_change tool
-        await navigator.modelContext.addTool({
-          name: 'undo_agent_change',
-          description: 'Revert the most recent agent-initiated transformation',
-          parameters: {
-            type: 'object',
-            properties: {}
-          },
-          required: [],
-          execute: async () => {
-            if (!state.agentLastChange) {
-              return { success: false, message: 'No agent change to undo' };
-            }
-            // Revert based on the last agent change type
-            const { tool, object_id } = state.agentLastChange;
-            const obj = state.objects.find(o => o.id === object_id);
-            if (!obj) return { success: false, message: 'Object not found' };
-
-            let reverted = false;
-            if (tool === 'move_object') {
-              // Store original before move for simplicity, just reset position to 0,0,0 or previous
-              // In a full app, we'd use the undo stack; here we push a manual undo
-              pushUndo('human_revert_move');
-            } else if (tool === 'rotate_object') {
-              // Similar revert
-              pushUndo('human_revert_rotate');
-            } else if (tool === 'scale_object') {
-              pushUndo('human_revert_scale');
-            }
-
-            state.agentLastChange = null;
-            updateScene();
-            return { success: true, message: 'Agent change reverted' };
-          }
-        });
-
-        // Register accept_agent_suggestion tool
-        await navigator.modelContext.addTool({
-          name: 'accept_agent_suggestion',
-          description: 'Accept and lock in the agent\'s last suggested change',
-          parameters: {
-            type: 'object',
-            properties: {}
-          },
-          required: [],
-          execute: async () => {
-            if (!state.agentLastChange) {
-              return { success: false, message: 'No agent suggestion to accept' };
-            }
-            // The agent change was already applied when the tool executed;
-            // just mark it as accepted and clear the pending flag
-            state.agentLastChange = null;
-            updateScene();
-            return { success: true, message: 'Agent suggestion accepted' };
-          }
-        });
-
-        // Register export_stl tool
-        await navigator.modelContext.addTool({
-          name: 'export_stl',
-          description: 'Export the current scene as an STL file',
-          parameters: {
-            type: 'object',
-            properties: {}
-          },
-          required: [],
-          execute: async () => {
-            const exporter = new STLExporter();
-            const serialized = exporter.parse(scene);
-            const blob = new Blob([new XMLSerializer().serializeString(serialized)], { type: 'application/slash-stl' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `webmcp-model-${Date.now()}.stl`;
-            a.click();
-            URL.revokeObjectURL(url);
-            return { success: true, message: 'STL export initiated' };
-          }
-        });
-
-        // Register load_model_state tool
-        await navigator.modelContext.addTool({
-          name: 'load_model_state',
-          description: 'Load model from a saved JSON state',
-          parameters: {
-            type: 'object',
-            properties: {
-              state_json: { type: 'string' }
-            },
-            required: ['state_json']
-          },
-          execute: async ({ state_json }) => {
-            try {
-              const parsed = JSON.parse(state_json);
-              // Merge objects, preserving existing ones' IDs where possible
-              state.objects = [...parsed.objects, ...state.objects].filter(
-                (o, i, a) => a.findIndex(x => x.id === o.id) === i
-              );
-              pushUndo('load_model');
-              updateScene();
-              return { success: true, message: 'Model loaded', objectCount: state.objects.length };
-            } catch (e) {
-              return { success: false, message: `Invalid state JSON: ${e.message}` };
-            }
-          }
-        });
-
-        showWebMCPStatus(`WebMCP ready — ${navigator.modelContext.tools.length} tools registered`, 'success');
-      } catch (err) {
-        console.error('WebMCP tool registration failed:', err);
-        showWebMCPStatus(`Error: ${err.message}`, 'error');
-      }
-    }
-
-    function showWebMCPStatus(msg, type) {
-      const bar = document.getElementById('webmcp-status');
-      document.getElementById('webmcp-tool-count').textContent = navigator.modelContext?.tools?.length || 0;
-      bar.classList.remove('hidden');
-      bar.style.background = type === 'success' ? 'var(--success-bg)' : 'var(--error-bg)';
-      bar.querySelector('span').textContent = msg;
-    }
-
-    // ============================
-    // Event Listeners for UI Buttons
-    // ============================
-    document.querySelectorAll('.tool-btn[data-primitive]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const type = btn.dataset.primitive;
-        navigator.modelContext.executeTool('add_primitive', { type })
-          .then(res => {
-            if (res.success && res.objectId) state.selectedId = res.objectId;
-            updateUI();
-          })
-          .catch(err => console.error(err));
-      });
-    });
-
-    document.querySelectorAll('.tool-btn[data-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        // Just enable the selected object transform mode UI-wise
-        // Actual transforms triggered by keyboard or agent tools
-      });
-    });
-
-    document.querySelectorAll('.tool-btn[data-material]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const material = btn.dataset.material;
-        if (!state.selectedId) return alert('Select an object first');
-        navigator.modelContext.executeTool('set_material', { object_id: state.selectedId, material })
-          .then(res => {
-            if (res.success) updateUI();
-          })
-          .catch(err => console.error(err));
-      });
-    });
-
-    document.getElementById('undo-btn').addEventListener('click', () => {
-      commitUndo();
-      updateScene();
-      updateUI();
-    });
-
-    document.getElementById('redo-btn').addEventListener('click', () => {
-      commitRedo();
-      updateScene();
-      updateUI();
-    });
-
-    document.getElementById('accept-agent-btn').addEventListener('click', () => {
-      navigator.modelContext.executeTool('accept_agent_suggestion', {})
-        .then(res => {
-          if (res.success) {
-            document.getElementById('accept-agent-btn').classList.add('hidden');
-            document.getElementById('reject-agent-btn').classList.add('hidden');
-            showWebMCPStatus('Agent suggestion accepted', 'success');
-          }
-        })
-        .catch(err => console.error(err));
-    });
-
-    document.getElementById('reject-agent-btn').addEventListener('click', () => {
-      // Revert the agent change using undo
-      if (state.agentLastChange) {
-        commitUndo(); // restores state before the agent change
-        state.agentLastChange = null;
-        updateScene();
-      }
-      document.getElementById('accept-agent-btn').classList.add('hidden');
-      document.getElementById('reject-agent-btn').classList.add('hidden');
-      showWebMCPStatus('Agent change rejected', 'error');
-    });
-
-    // ============================
-    // Initialization
-    // ============================
-    document.addEventListener('DOMContentLoaded', () => {
-      initThree();
-      registerWebMCPTools().then(() => {
-        // Check for saved session in URL params
-        const params = new URLSearchParams(window.location.search);
-        const modelBase64 = params.get('model');
-        if (modelBase64) {
-          try {
-            const modelJson = atob(modelBase64);
-            navigator.modelContext.executeTool('load_model_state', { state_json: modelJson })
-              .then(res => {
-                if (!res.success) alert('Failed to load model: ' + res.message);
-              });
-          } catch (e) {
-            console.error('Invalid model link', e);
-          }
-        }
-      });
-    });
-
-    // Disable right-click menu on canvas
-    document.getElementById('canvas-container').addEventListener('contextmenu', e => e.preventDefault);
-  </script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
