@@ -3695,6 +3695,63 @@ function disposeExportGroup(group) {
 }
 
 /*
+ * Start a client-side download for an already prepared object URL.
+ *
+ * The plain hidden-anchor click is the happy path, but it is NOT universal: when the
+ * app runs inside an embedded or sandboxed frame (live previews, iframes without the
+ * allow-downloads flag) the browser silently swallows frame-initiated downloads — the
+ * click "succeeds" yet no file is ever saved. For embedded contexts we hand the job
+ * to a small popup: a top-level window that escapes the frame's download restrictions
+ * and re-fires the anchor there, keeping the real filename intact. If the popup is
+ * blocked we still fall back to the in-frame anchor click.
+ */
+function anchorDownload(doc, url, filename) {
+  const anchor = doc.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  doc.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+function triggerFileDownload(url, filename) {
+  const embedded = (() => {
+    try { return window.self !== window.top; } catch (_) { return true; }
+  })();
+  if (embedded) {
+    try {
+      const popup = window.open('', '_blank');
+      if (popup) {
+        const doc = popup.document;
+        doc.title = filename;
+        doc.body.style.cssText = 'font: 14px/1.6 system-ui, sans-serif; padding: 24px; background: #101014; color: #e8e8ec;';
+        doc.body.innerHTML = '';
+        const note = doc.createElement('p');
+        note.append(doc.createTextNode(`Downloading ${filename}… If nothing happens, `));
+        const manual = doc.createElement('a');
+        manual.href = url;
+        manual.download = filename;
+        manual.textContent = 'click here to save the file';
+        manual.style.color = '#9ecbff';
+        note.append(manual, doc.createTextNode('. This tab closes by itself.'));
+        doc.body.append(note);
+        anchorDownload(doc, url, filename);
+        popup.setTimeout(() => popup.close(), 4000);
+        return { started: true, via: 'tab' };
+      }
+    } catch (_) {
+      /* Popup was opened cross-origin or blocked mid-flight — try it as a plain
+         navigation so the browser saves the blob from the new top-level tab. */
+      const fallbackTab = window.open(url, '_blank', 'noopener');
+      if (fallbackTab) return { started: true, via: 'tab' };
+    }
+  }
+  anchorDownload(document, url, filename);
+  return { started: true, via: embedded ? 'anchor-fallback' : 'anchor' };
+}
+
+/*
  * Produce a local, genuinely three-dimensional STL from the visible scene and start
  * the browser download. `mode` is 'color' (per-facet colour) or 'solid' (uniform dark
  * grey, fully opaque). The object URL is intentionally kept alive for the session so
@@ -3730,18 +3787,15 @@ function exportSTL(source = 'human', mode = state.exportMode) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filename = `orbit-model-${stamp}-${flavourInfo.suffix}.stl`;
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
+    const download = triggerFileDownload(url, filename);
     addActivity(
       `STL export initiated — ${flavourInfo.label.toLowerCase()}`,
       `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} 3D STL (${flavourInfo.summary.toLowerCase()}) from ${meshCount} solid form${meshCount === 1 ? '' : 's'}, ${triangleCount} facets, bounds ${bounds.size.join(' × ')}.`,
       source
     );
-    showToast(`${flavourInfo.label} STL download prepared`);
+    showToast(download.via === 'tab'
+      ? `${flavourInfo.label} STL is downloading in a new tab`
+      : `${flavourInfo.label} STL download prepared`);
     return {
       success: true,
       message: `3D STL export initiated (${flavourInfo.label.toLowerCase()}).`,
@@ -3875,6 +3929,14 @@ function addFileCardMessage(role, file) {
   const link = node('a', 'export-card-link', 'Download ⤓');
   link.href = file.url;
   link.download = file.filename;
+  link.rel = 'noopener';
+  /* Route re-downloads through the same embed-safe path as the initial export —
+     a bare download-attribute click is silently blocked inside sandboxed frames. */
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    const download = triggerFileDownload(file.url, file.filename);
+    showToast(download.via === 'tab' ? `${file.filename} is downloading in a new tab` : `${file.filename} download started`);
+  });
   card.append(meta, link);
   bubble.append(card);
   message.append(bubble);
