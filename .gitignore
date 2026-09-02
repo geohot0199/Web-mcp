@@ -1,0 +1,2 @@
+# Dev-only toolchain installed via `npm install` (three.js for the STL export checks).
+node_modules/

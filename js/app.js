@@ -7,7 +7,9 @@ import {
   SOLID_EXPORT_COLOR,
   buildBinarySTL,
   collectExportTriangles,
+  detectFormIntersections,
   normaliseExportMode,
+  subdivideForTexture,
   trianglesBounds
 } from './stl-export.js';
 import { routePrompt, extractRestoreTarget } from './agent-router.js';
@@ -186,7 +188,7 @@ const state = {
   timeTravel: { active: false, eventId: null, liveSnapshot: null },
   activity: [],
   currentMode: 'planning',
-  /* Chosen STL flavour: 'color' (per-facet colour) or 'solid' (uniform dark grey body). */
+  /* Chosen STL flavour: 'color' (per-facet scene colour) or 'solid' (plain uncoloured body — the dark grey is preview-only). */
   exportMode: 'color',
   /* While the export dialog is open the viewport previews the chosen flavour. */
   exportPreview: null,
@@ -813,9 +815,11 @@ function makeGeometry(type, detail = 'standard') {
 }
 
 /*
- * Solid-mode surface. The STL carries no material, so the preview shows exactly what the
- * file describes: one dark, fully opaque grey body — glass and other translucent presets
- * lose their light, see-through look because the exported solid has no transparency.
+ * Solid-mode preview surface. The solid STL itself carries no colour data at all — it
+ * is a plain, attribute-free file that slicers and viewers shade with their own default
+ * grey. This dark, fully opaque material is only the in-app signal for that flavour:
+ * glass and translucent finishes lose their see-through look to communicate "one plain,
+ * opaque body", which is what the file contains (just without any embedded colour).
  */
 function makeSolidPreviewMaterial() {
   return new THREE.MeshStandardMaterial({
@@ -2623,7 +2627,7 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   if (!interrupted && exportAction) {
     const file = exportSTL('agent', exportAction.mode || state.exportMode);
     if (file.success) {
-      addMessage('agent', `I exported the current shared scene as a ${file.mode_label.toLowerCase()} 3D STL — ${file.filename} (${file.triangle_count} facets, closed solid body) is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
+      addMessage('agent', `I exported the current shared scene as a ${file.mode_label.toLowerCase()} 3D STL — ${file.filename} (${file.triangle_count} facets, closed 3D ${file.object_count > 1 ? 'bodies' : 'body'}) is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
       addFileCardMessage('agent', file);
     } else {
       addMessage('agent', `The export could not be completed: ${file.message}`);
@@ -3497,8 +3501,8 @@ function defineTools() {
   });
   registerTool({
     name: 'export_stl',
-    description: 'Stage a 3D STL export request. The file always contains the full three-dimensional solid body (flat sheets are thickened, never exported as 2D surfaces). Choose mode "color" for per-facet scene colour or "solid" for one uniform dark grey opaque body. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
-    parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['color', 'solid'], description: 'color = per-facet colour STL, solid = uniform dark grey solid STL.' } }, required: [] },
+    description: 'Stage a 3D STL export request. The file always contains full three-dimensional solid bodies (flat sheets are thickened, never exported as 2D surfaces) and the export is refused while any two forms overlap in space — separate overlapping forms first. Choose mode "color" for per-facet scene colour (procedural textures are sampled per facet) or "solid" for a plain, uncoloured STL that slicers shade with their own default grey. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
+    parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['color', 'solid'], description: 'color = per-facet colour STL (textures sampled per facet), solid = plain uncoloured STL.' } }, required: [] },
     execute: async ({ mode } = {}) => {
       const flavour = normaliseExportMode(mode || state.exportMode);
       const label = EXPORT_MODES[flavour].label.toLowerCase();
@@ -3586,19 +3590,67 @@ function resolvedObjectColor(object) {
   return validColor(object.color) ? object.color : preset.color;
 }
 
+function colorToRgbBytes(hex) {
+  const value = validColor(hex) ? hex : '#808080';
+  return {
+    r: parseInt(value.slice(1, 3), 16),
+    g: parseInt(value.slice(3, 5), 16),
+    b: parseInt(value.slice(5, 7), 16)
+  };
+}
+
+/*
+ * Colour exports bake the procedural texture into per-facet colours. The viewport
+ * material multiplies base colour × texture map, so the sampler reads the texture's
+ * own canvas at each facet's UV centroid and multiplies the same way — the exported
+ * palette then matches the pattern the human approved on screen. Best effort: without
+ * a readable canvas the export falls back to the object's base colour.
+ */
+function makeExportTextureSampler(object) {
+  const texture = getProceduralTexture(object.texture, object.textureScale);
+  const canvas = texture?.image;
+  if (!canvas || typeof canvas.getContext !== 'function') return null;
+  try {
+    const context = canvas.getContext('2d');
+    if (!context) return null;
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    const repeat = Math.max(safeNumber(object.textureScale, 1), 1e-6);
+    const base = colorToRgbBytes(resolvedObjectColor(object));
+    return (u, v) => {
+      const fu = (((u * repeat) % 1) + 1) % 1;
+      const fv = (((v * repeat) % 1) + 1) % 1;
+      const x = Math.min(canvas.width - 1, Math.floor(fu * canvas.width));
+      // CanvasTexture flips V on upload, so sample the row the viewport actually shows.
+      const y = Math.min(canvas.height - 1, Math.floor((1 - fv) * canvas.height));
+      const tone = data[(y * canvas.width + x) * 4] / 255;
+      const shade = (channel) => Math.max(0, Math.min(255, Math.round(channel * tone)));
+      return { r: shade(base.r), g: shade(base.g), b: shade(base.b) };
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 /*
  * Geometry used for export only. It is deliberately *not* the viewport geometry:
  * a `plane` is a zero-thickness sheet on screen, which would land in the STL as a
- * flat 2D surface. Here every form becomes a closed 3D body.
+ * flat 2D surface. Here every form becomes a closed 3D body. Colour exports of
+ * textured forms are also UV-subdivided so per-facet texture sampling resolves the
+ * pattern instead of tinting a whole face with one sample.
  */
-function makeExportGeometry(object) {
+function makeExportGeometry(object, flavour = state.exportMode) {
+  let geometry;
   if (object.type === 'plane') {
     const depthScale = Math.max(Math.abs(safeNumber(object.scale?.[2], 1)), 1e-3);
     // Local Z is the plane's thin axis (planes are laid flat by a -90° X rotation).
     const depth = Math.max(PLANE_THICKNESS, MIN_SOLID_THICKNESS / depthScale);
-    return new THREE.BoxGeometry(1, 1, depth, 1, 1, 1);
+    geometry = new THREE.BoxGeometry(1, 1, depth, 1, 1, 1);
+  } else {
+    geometry = makeGeometry(object.type, object.detail);
   }
-  return makeGeometry(object.type, object.detail);
+  const bakesTexture = normaliseExportMode(flavour) === 'color'
+    && Boolean(object.texture && object.texture !== 'none' && TEXTURES[object.texture]);
+  return bakesTexture ? subdivideForTexture(geometry) : geometry;
 }
 
 /* Never let a collapsed axis flatten a body into a sheet. */
@@ -3610,14 +3662,17 @@ function exportScaleAxis(value) {
 
 /*
  * Build a throwaway group of solid, export-safe meshes from scene state.
- * Each mesh carries the colour the chosen export mode should write.
+ * Each mesh carries the colour the chosen export mode should write: solid mode a
+ * uniform preview colour note (the file itself stays uncoloured), colour mode the
+ * object's resolved surface colour — or a per-facet texture sampler when the form
+ * is textured.
  */
 function buildExportGroup(mode) {
   const flavour = normaliseExportMode(mode);
   const group = new THREE.Group();
   group.name = 'Orbit export body';
   state.objects.forEach((object) => {
-    const mesh = new THREE.Mesh(makeExportGeometry(object));
+    const mesh = new THREE.Mesh(makeExportGeometry(object, flavour));
     mesh.name = object.name;
     mesh.position.set(...object.position);
     mesh.rotation.set(...object.rotation);
@@ -3627,6 +3682,8 @@ function buildExportGroup(mode) {
       exportScaleAxis(object.scale[2])
     );
     mesh.userData.exportColor = flavour === 'solid' ? SOLID_EXPORT_COLOR : resolvedObjectColor(object);
+    const textureSampler = flavour === 'color' ? makeExportTextureSampler(object) : null;
+    if (textureSampler) mesh.userData.exportColorAt = textureSampler;
     group.add(mesh);
   });
   group.updateMatrixWorld(true);
@@ -3653,10 +3710,20 @@ function exportSTL(source = 'human', mode = state.exportMode) {
   let group;
   try {
     group = buildExportGroup(flavour);
-    const { triangles, degenerate, meshCount } = collectExportTriangles(group);
+    const collected = collectExportTriangles(group);
+    const { triangles, degenerate, meshCount } = collected;
     if (!triangles.length) throw new Error('No printable geometry could be derived from this scene.');
     const bounds = trianglesBounds(triangles);
     if (bounds.flat) throw new Error('This scene is flat — add depth before exporting a 3D STL.');
+    const overlaps = detectFormIntersections(collected);
+    if (overlaps.length) {
+      // Every exported form is its own closed shell; overlapping forms would write
+      // intersecting, non-manifold facets. Refuse with an accurate error instead.
+      const pairs = overlaps.map(({ a, b }) => `“${a}” overlaps “${b}”`).join('; ');
+      throw new Error(
+        `Forms intersect in space — ${pairs}. Each form exports as its own closed body, so overlapping forms cannot be written as one solid: separate them (exact contact is fine) and export again.`
+      );
+    }
 
     const { buffer, triangleCount } = buildBinarySTL(triangles, { mode: flavour, solidColor: SOLID_EXPORT_COLOR });
     const blob = new Blob([buffer], { type: 'model/stl' });
@@ -3705,10 +3772,12 @@ function exportSTL(source = 'human', mode = state.exportMode) {
  */
 function estimatedExportFacets() {
   const group = buildExportGroup(state.exportMode);
-  const { triangles, meshCount } = collectExportTriangles(group);
+  const collected = collectExportTriangles(group);
+  const { triangles, meshCount } = collected;
   const bounds = trianglesBounds(triangles);
+  const overlaps = detectFormIntersections(collected);
   disposeExportGroup(group);
-  return { facets: triangles.length, meshCount, bounds };
+  return { facets: triangles.length, meshCount, bounds, overlaps };
 }
 
 function renderExportSwatches() {
@@ -3733,9 +3802,16 @@ function renderExportDialog() {
     els.exportSummary.textContent = 'Scene is empty — add a form before exporting.';
     return;
   }
-  const { facets, meshCount, bounds } = estimatedExportFacets();
+  const { facets, meshCount, bounds, overlaps } = estimatedExportFacets();
   const flavour = EXPORT_MODES[normaliseExportMode(state.exportMode)];
-  els.exportSummary.textContent = `${flavour.label} · ${meshCount} solid form${meshCount === 1 ? '' : 's'} · ${facets} facets · bounds ${bounds.size.join(' × ')} · closed 3D body, binary .stl`;
+  if (overlaps.length) {
+    const pairs = overlaps.map(({ a, b }) => `${a} + ${b}`).join(', ');
+    els.exportSummary.textContent = `Cannot export — forms overlap in space: ${pairs}. Separate the overlapping forms (exact contact is fine) so every form is its own closed body.`;
+    if (els.exportConfirmBtn) els.exportConfirmBtn.disabled = true;
+    return;
+  }
+  if (els.exportConfirmBtn) els.exportConfirmBtn.disabled = false;
+  els.exportSummary.textContent = `${flavour.label} · ${meshCount} solid form${meshCount === 1 ? '' : 's'} · ${facets} facets · bounds ${bounds.size.join(' × ')} · closed 3D body${meshCount === 1 ? '' : ' per form'}, binary .stl`;
 }
 
 function setExportMode(mode) {

@@ -7,6 +7,10 @@
   "scripts": {
     "check": "node --check js/app.js && node --check js/agent-router.js && node --check js/orbit-connection.js && node --check js/stl-export.js && node scripts/run-agent-evals.mjs && node scripts/test-stl-export.mjs",
     "evals": "node scripts/run-agent-evals.mjs",
-    "test:stl": "node scripts/test-stl-export.mjs"
+    "test:stl": "node scripts/test-stl-export.mjs",
+    "test:stl:optional": "node scripts/test-stl-export.mjs --optional"
+  },
+  "devDependencies": {
+    "three": "0.164.0"
   }
 }
