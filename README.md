@@ -73,7 +73,8 @@ The studio is built around one idea: **your selection is your pointer into the c
 - **Full-space canvas.** The **⤢ / ⤡** buttons in the canvas HUD (or the `V` key / Viewport focus control) collapse and restore the manual panels on demand, so you can frame the model in the entire 3D space — the agent keeps working while the chrome disappears.
 - **Take the model with you.** **Export ↗** (header) or **Download STL ⤓** (canvas toolbar) opens the export dialog and saves the current scene locally, with the file attached to the chat as a card you can re-download anytime. Agent-initiated exports do the same thing through the approval flow — the STL downloads and the file lands in the conversation. Nothing is ever uploaded.
   - **Always a 3D solid.** The exporter never dumps the viewport meshes as-is: every form is baked into world space as a closed body, flat `plane` sheets are thickened into slabs, collapsed scale axes are clamped, degenerate facets are dropped, and mirrored transforms are re-wound outward. A flat, "2D" STL can no longer leave the studio — the dialog reports the facet count and the exported bounds before you commit.
-  - **Two flavours.** **1 · Colour** writes each facet's scene colour into the binary STL (Materialise Magics / VisCAM colour attribute plus a `COLOR=` header) so colour-aware viewers show the palette. **2 · Solid** writes one uniform, *dark* grey body — fully opaque, no transparency, glass and translucent finishes become solid mass — as a plain STL every slicer reads identically. Picking a flavour previews it live in the viewport, so what you see is what the file contains.
+  - **No intersecting bodies.** Overlapping forms are refused with a clear error instead of being written as intersecting, non-manifold facets. Orbit does not attempt a boolean union (fragile for the coplanar, grid-aligned contact this studio produces) — every exported form is its own closed shell, so form intersections are detected up front and the export asks you to separate the forms first. Exact contact (stacked forms, butt joints) is fine.
+  - **Two flavours.** **1 · Colour** writes each facet's scene colour into the binary STL using the **Materialise Magics** colour convention (bit 15 clear, red in bits 0–4, plus a `COLOR=` header), and procedural textures are sampled per facet so textured surfaces keep their pattern. Colour-aware viewers show the palette. Note this is deliberately *not* the incompatible VisCAM/SolidView convention (bit 15 set, blue in bits 0–4) — those readers ignore the colours and still get the solid. **2 · Solid** writes a **plain, attribute-free STL that carries no colour data at all** — fully opaque in spirit (glass and translucent finishes become solid mass), and slicers/viewers shade it with their own default grey. The dark `#3f3f3f` look is the in-app preview of that flavour, not file content. Picking a flavour previews it live in the viewport.
 - **Time-travel audit.** Every action (human or agent) is logged with parameters and a scene snapshot. Scrub the timeline to inspect any past state read-only, then return to live.
 - **Orbit connection — no API keys.** Click **Orbit connection** in the top bar and connect in one click. There is no key to paste, no provider account, and no credential stored anywhere — the keyless connection lives in memory for the current tab only. Open-ended builds are handed to Orbit's planning model and still come back as approval-gated proposals; deterministic reads and edits stay local, and everything falls back to the built-in planner if the connection is unavailable.
 - **Wipe after use.** The same panel has **Wipe everything** (two-click armed confirmation), which clears the scene, checkpoints, history, activity, annotations, constraints, preferences, the share fragment, and the Orbit connection in one go.
@@ -211,12 +212,14 @@ Orbit runs on a small, deliberate stack — no framework, no build step, no serv
 
 ### Verified, not vibes
 
-`npm run check` runs syntax checks **plus** the agent evaluation suite:
+`npm run check` runs syntax checks **plus** the agent evaluation suite and the STL export checks. `three` is a dev dependency (pinned to the version the browser loads from the CDN), so install once first — without it the STL checks **fail** rather than silently skipping; `npm run test:stl:optional` is the explicit opt-out for environments that cannot install:
 
 ```bash
+npm install
 npm run check
 # Orbit agent workflow evaluation: 38/38 passed
 # Dispatch coverage: all 25 router tools are explicitly handled or are intentional plan builders.
+# All STL export checks passed (solidity, no-overlap refusal, Magics colour encoding, texture baking)
 ```
 
 `evals/agent-workflows.json` holds **38 prompts** with expected tool choice, parameter extraction, approval state, and sensitive-action handling (20 approval-gated, 4 sensitive). A static **dispatch-coverage guard** additionally proves that every tool the router can return is explicitly handled by the agent request handler — read routes can never silently degrade into geometry proposals again.
@@ -265,10 +268,11 @@ python3 -m http.server 8080 --bind 0.0.0.0
 
 > Three.js and OrbitControls load as ES modules from jsDelivr, so the browser needs internet access — or vendor them locally for an offline deployment.
 
-**Verify the agent layer:**
+**Verify the agent layer and the exporter:**
 
 ```bash
-npm run check    # syntax + 38/38 intent-routing evals + dispatch coverage
+npm install      # once — dev-only three.js for the STL checks
+npm run check    # syntax + 38/38 intent-routing evals + dispatch coverage + STL export checks
 npm run evals    # evals only
 ```
 

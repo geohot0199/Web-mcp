@@ -481,18 +481,18 @@
       <button class="modal-close" type="button" data-close-modal="export-modal" aria-label="Close export">×</button>
       <span class="eyebrow">Manufacture</span>
       <h2 id="export-title">Export 3D model as STL</h2>
-      <p>Orbit writes the full three-dimensional body — every form is baked into world space as a closed solid, flat sheets are thickened, and nothing is exported as a 2D surface. Choose how the file should be shaded.</p>
+      <p>Orbit writes the full three-dimensional body — every form is baked into world space as a closed solid, flat sheets are thickened, nothing is exported as a 2D surface, and overlapping forms are refused (every form becomes its own closed body). Choose how the file should be shaded.</p>
 
       <div class="export-mode-grid" role="radiogroup" aria-label="STL export flavour">
         <button type="button" class="export-mode-option" data-export-mode="color" role="radio" aria-checked="true">
           <span class="export-mode-swatch export-mode-swatch-color" id="export-swatch-color" aria-hidden="true"></span>
           <strong>1 · Colour</strong>
-          <small>Every facet keeps its scene colour, written into the binary STL (Magics/VisCAM colour extension) with a <code>COLOR=</code> header. Colour-aware viewers show the palette; slicers still read the same solid.</small>
+          <small>Every facet keeps its scene colour — textured surfaces are sampled per facet — written into the binary STL with the Materialise Magics colour extension plus a <code>COLOR=</code> header. Colour-aware viewers show the palette; slicers still read the same solid.</small>
         </button>
         <button type="button" class="export-mode-option" data-export-mode="solid" role="radio" aria-checked="false">
           <span class="export-mode-swatch export-mode-swatch-solid" aria-hidden="true"></span>
           <strong>2 · Solid</strong>
-          <small>One full grey body — dark, fully opaque, no transparency anywhere. Glass and translucent finishes become solid dark grey mass. Plain STL every slicer understands.</small>
+          <small>One plain, uncoloured body — fully opaque, no transparency anywhere; glass and translucent finishes become solid mass. The file carries no colour data: slicers and viewers shade it with their own default grey. The dark look of the preview just signals that plain, opaque solid.</small>
         </button>
       </div>
 

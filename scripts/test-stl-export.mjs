@@ -1,19 +1,31 @@
 /*
  * STL export verification.
  *
- * Guards the property the studio cares about: the exported file is a real 3D solid,
- * never the flat 2D surfaces a naive mesh dump produces, and both export flavours
- * (colour / solid grey) are written correctly.
+ * Guards the properties the studio cares about: the exported file is a real 3D solid,
+ * never the flat 2D surfaces a naive mesh dump produces, overlapping forms are refused
+ * instead of written as non-manifold intersections, both export flavours (colour /
+ * plain solid) are written correctly, and procedural textures are baked into per-facet
+ * colours.
  *
- * three.js is loaded from the CDN in the browser, so it is not a runtime dependency
- * here. If it is not installed locally the script skips instead of failing.
+ * three.js is a dev dependency pinned to the version the browser loads from the CDN,
+ * so `npm run check` fails loudly when it is missing (a green check must mean the
+ * assertions actually ran). Environments that genuinely cannot install it may opt out
+ * explicitly with `npm run test:stl:optional` — a flag the check path never uses.
  */
+const optional = process.argv.includes('--optional');
 let THREE;
 try {
   THREE = await import('three');
-} catch (_) {
-  console.log('· skipped: install three locally (npm i three@0.164.0) to run the STL export checks');
-  process.exit(0);
+} catch (error) {
+  if (optional) {
+    console.log('· skipped (--optional): three is not installed, so the STL export checks did not run');
+    process.exit(0);
+  }
+  console.error('✗ three could not be imported — the STL export checks did not run.');
+  console.error('  three is a dev dependency (same version the browser loads from the CDN):');
+  console.error('  run `npm install` before `npm run check` / `npm run test:stl`.');
+  console.error(`  (${error.message})`);
+  process.exit(1);
 }
 
 const {
@@ -22,6 +34,8 @@ const {
   SOLID_EXPORT_COLOR,
   buildBinarySTL,
   collectExportTriangles,
+  detectFormIntersections,
+  subdivideForTexture,
   trianglesBounds
 } = await import('../js/stl-export.js');
 
@@ -41,6 +55,11 @@ function mesh(geometry, { position = [0, 0, 0], rotation = [0, 0, 0], scale = [1
   item.rotation.set(...rotation);
   item.scale.set(...scale);
   item.userData.exportColor = color;
+  return item;
+}
+
+function named(name, item) {
+  item.name = name;
   return item;
 }
 
@@ -75,6 +94,106 @@ const outward = mirrored.triangles.filter((t) => {
 });
 check('mirrored geometry keeps outward normals', outward.length === mirrored.triangles.length);
 
+/* Overlapping forms must be refused, not written as intersecting facets. */
+function intersectionPairs(entries) {
+  const group = new THREE.Group();
+  entries.forEach((entry) => group.add(entry));
+  return detectFormIntersections(collectExportTriangles(group));
+}
+
+const unitBox = () => new THREE.BoxGeometry(1, 1, 1);
+
+check('disjoint forms never report an intersection',
+  intersectionPairs([
+    named('Cube A', mesh(unitBox(), { position: [0, 0, 0] })),
+    named('Cube B', mesh(unitBox(), { position: [4, 0, 0] }))
+  ]).length === 0);
+
+check('exactly touching forms (stacked) are allowed to export',
+  intersectionPairs([
+    named('Base', mesh(unitBox(), { position: [0, 0, 0] })),
+    named('Top', mesh(unitBox(), { position: [0, 1, 0] }))
+  ]).length === 0);
+
+check('exactly touching forms (butt joint) are allowed to export',
+  intersectionPairs([
+    named('Left', mesh(unitBox(), { position: [-0.5, 0, 0] })),
+    named('Right', mesh(unitBox(), { position: [0.5, 0, 0] }))
+  ]).length === 0);
+
+/* 0.64 units is the studio's default placement spread — unit forms overlap at it. */
+const overlapping = intersectionPairs([
+  named('Cube A', mesh(unitBox(), { position: [0, 0, 0] })),
+  named('Cube B', mesh(unitBox(), { position: [0.64, 0, 0] }))
+]);
+check('face-aligned overlapping forms are detected (default spread)', overlapping.length === 1, JSON.stringify(overlapping));
+check('detection names the overlapping forms',
+  overlapping[0]?.a === 'Cube A' && overlapping[0]?.b === 'Cube B', JSON.stringify(overlapping));
+
+check('a form fully embedded inside another is detected',
+  intersectionPairs([
+    named('Shell', mesh(unitBox(), { position: [0, 0, 0] })),
+    named('Core', mesh(new THREE.SphereGeometry(0.25, 16, 12), { position: [0, 0, 0] }))
+  ]).length === 1);
+
+check('transversal crossings (beam through beam) are detected',
+  intersectionPairs([
+    named('Beam X', mesh(new THREE.BoxGeometry(3, 0.2, 0.2), { position: [0, 0, 0] })),
+    named('Beam Y', mesh(new THREE.BoxGeometry(0.2, 3, 0.2), { position: [0, 0.3, 0] }))
+  ]).length === 1);
+
+check('diagonal neighbours with touching bounding boxes stay allowed',
+  intersectionPairs([
+    named('Cube A', mesh(unitBox(), { position: [0, 0, 0] })),
+    named('Cube B', mesh(unitBox(), { position: [1, 1, 0] }))
+  ]).length === 0);
+
+/* Texture baking: subdivision keeps facets small in UV space, sampling reaches facets. */
+const texturedGeometry = subdivideForTexture(new THREE.BoxGeometry(1, 1, 1));
+const texturedPosition = texturedGeometry.getAttribute('position');
+const texturedUv = texturedGeometry.getAttribute('uv');
+check('textured exports subdivide coarse facets for sampling', texturedPosition.count > 12, `${texturedPosition.count} vertices`);
+let worstUvArea = 0;
+for (let i = 0; i < texturedPosition.count; i += 3) {
+  const u0 = texturedUv.getX(i), v0 = texturedUv.getY(i);
+  const u1 = texturedUv.getX(i + 1), v1 = texturedUv.getY(i + 1);
+  const u2 = texturedUv.getX(i + 2), v2 = texturedUv.getY(i + 2);
+  worstUvArea = Math.max(worstUvArea, Math.abs((u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0)) / 2);
+}
+check('sub-facets cover small UV patches (samples resolve the pattern)', worstUvArea <= 1 / 128 + 1e-9, `max ${worstUvArea.toFixed(4)}`);
+const subdividedBounds = trianglesBounds(collectExportTriangles(new THREE.Mesh(texturedGeometry, undefined)).triangles);
+check('subdivision preserves the solid shape exactly',
+  subdividedBounds.size.every((value, index) => Math.abs(value - [1, 1, 1][index]) < 1e-6),
+  `bounds ${subdividedBounds.size.join(' × ')}`);
+
+const bakedGroup = new THREE.Group();
+const bakedMesh = new THREE.Mesh(texturedGeometry);
+bakedMesh.userData.exportColorAt = (u) => (u < 0.5 ? { r: 255, g: 0, b: 0 } : { r: 0, g: 0, b: 255 });
+bakedGroup.add(bakedMesh);
+const baked = collectExportTriangles(bakedGroup);
+const redFacets = baked.triangles.filter((t) => t.color.r === 255).length;
+const blueFacets = baked.triangles.filter((t) => t.color.b === 255).length;
+check('per-facet texture sampling reaches every facet', redFacets + blueFacets === baked.triangles.length);
+check('sampled texture colours actually vary per facet', redFacets > 0 && blueFacets > 0, `${redFacets} red / ${blueFacets} blue`);
+
+const bakedBinary = buildBinarySTL(baked.triangles, { mode: 'color' });
+const bakedView = new DataView(bakedBinary.buffer);
+const bakedAttributes = new Set();
+for (let i = 0; i < baked.triangles.length; i += 1) bakedAttributes.add(bakedView.getUint16(84 + i * 50 + 48, true));
+check('sampled texture colours round-trip through the STL attributes',
+  bakedAttributes.has(31) && bakedAttributes.has(31 << 10), // 5-bit pure red and pure blue
+  [...bakedAttributes].join(', '));
+
+/* A throwing sampler falls back to the base colour instead of breaking the export. */
+const brokenSamplerGroup = new THREE.Group();
+const brokenSamplerMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+brokenSamplerMesh.userData.exportColor = '#d94040';
+brokenSamplerMesh.userData.exportColorAt = () => { throw new Error('no canvas here'); };
+brokenSamplerGroup.add(brokenSamplerMesh);
+const brokenSampler = collectExportTriangles(brokenSamplerGroup);
+check('a failing texture sampler falls back to the base colour',
+  brokenSampler.triangles.length > 0 && brokenSampler.triangles.every((t) => t.color.r === 0xd9));
+
 /* Binary layout + colour attributes. */
 const colored = buildBinarySTL(solid.triangles, { mode: 'color' });
 const plain = buildBinarySTL(solid.triangles, { mode: 'solid', solidColor: SOLID_EXPORT_COLOR });
@@ -85,10 +204,13 @@ check('binary size matches the facet count', colored.buffer.byteLength === 84 + 
 check('facet count header is correct', view.getUint32(80, true) === solid.triangles.length);
 check('header never starts with "solid"', !header.trimStart().toLowerCase().startsWith('solid'));
 check('colour export carries a COLOR= header', header.includes('COLOR='));
+check('colour header names the Magics convention', header.includes('Magics'));
 
 const firstAttribute = view.getUint16(84 + 48, true);
 const plainAttribute = new DataView(plain.buffer).getUint16(84 + 48, true);
-check('colour export writes per-facet colour attributes', firstAttribute !== 0 && (firstAttribute & 0x8000) === 0);
+check('colour export writes Magics per-facet attributes (bit 15 clear)',
+  firstAttribute !== 0 && (firstAttribute & 0x8000) === 0);
+check('colour attributes keep red in the low bits (Magics order)', (firstAttribute & 0x1f) >= (firstAttribute >> 10) & 0x1f);
 check('solid export writes a plain, attribute-free STL', plainAttribute === 0);
 
 /* Decode a facet colour back and confirm it matches its mesh. */
