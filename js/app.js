@@ -2627,7 +2627,7 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   if (!interrupted && exportAction) {
     const file = exportSTL('agent', exportAction.mode || state.exportMode);
     if (file.success) {
-      addMessage('agent', `I exported the current shared scene as a ${file.mode_label.toLowerCase()} 3D STL — ${file.filename} (${file.triangle_count} facets, closed 3D ${file.object_count > 1 ? 'bodies' : 'body'}) is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
+      addMessage('agent', `I exported the current shared scene as a ${file.mode_label.toLowerCase()} 3D STL — ${file.filename} (${file.triangle_count} facets, closed 3D ${file.object_count > 1 ? 'bodies' : 'body'}) is downloading now, and the file is attached to this message so you can grab it again from the chat.${file.overlap_note ? ` One note before you print it: ${file.overlap_note}` : ''}`);
       addFileCardMessage('agent', file);
     } else {
       addMessage('agent', `The export could not be completed: ${file.message}`);
@@ -3501,7 +3501,7 @@ function defineTools() {
   });
   registerTool({
     name: 'export_stl',
-    description: 'Stage a 3D STL export request. The file always contains full three-dimensional solid bodies (flat sheets are thickened, never exported as 2D surfaces) and the export is refused while any two forms overlap in space — separate overlapping forms first. Choose mode "color" for per-facet scene colour (procedural textures are sampled per facet) or "solid" for a plain, uncoloured STL that slicers shade with their own default grey. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
+    description: 'Stage a 3D STL export request. The file always contains full three-dimensional solid bodies (flat sheets are thickened, never exported as 2D surfaces). Overlapping or duplicated forms never block the download — they are surfaced as an informational note naming the pairs, since every form exports as its own closed shell. Choose mode "color" for per-facet scene colour (procedural textures are sampled per facet) or "solid" for a plain, uncoloured STL that slicers shade with their own default grey. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
     parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['color', 'solid'], description: 'color = per-facet colour STL (textures sampled per facet), solid = plain uncoloured STL.' } }, required: [] },
     execute: async ({ mode } = {}) => {
       const flavour = normaliseExportMode(mode || state.exportMode);
@@ -3772,15 +3772,16 @@ function exportSTL(source = 'human', mode = state.exportMode) {
     if (!triangles.length) throw new Error('No printable geometry could be derived from this scene.');
     const bounds = trianglesBounds(triangles);
     if (bounds.flat) throw new Error('This scene is flat — add depth before exporting a 3D STL.');
+    /*
+     * Overlapping or exactly duplicated forms are reported, never blocked. Every
+     * form still exports as its own closed shell, so the download always proceeds
+     * and any detected pairs ride along as an informational note the human can act
+     * on — or ignore — after the file lands.
+     */
     const overlaps = detectFormIntersections(collected);
-    if (overlaps.length) {
-      // Every exported form is its own closed shell; overlapping forms would write
-      // intersecting, non-manifold facets. Refuse with an accurate error instead.
-      const pairs = overlaps.map(({ a, b }) => `“${a}” overlaps “${b}”`).join('; ');
-      throw new Error(
-        `Forms intersect in space — ${pairs}. Each form exports as its own closed body, so overlapping forms cannot be written as one solid: separate them (exact contact is fine) and export again.`
-      );
-    }
+    const overlapNote = overlaps.length
+      ? `${overlaps.length} form pair${overlaps.length === 1 ? '' : 's'} share${overlaps.length === 1 ? 's' : ''} space — ${overlaps.map(({ a, b }) => `“${a}” overlaps “${b}”`).join('; ')}. The file was still written normally; each form simply stays its own closed body in the STL.`
+      : '';
 
     const { buffer, triangleCount } = buildBinarySTL(triangles, { mode: flavour, solidColor: SOLID_EXPORT_COLOR });
     const blob = new Blob([buffer], { type: 'model/stl' });
@@ -3790,12 +3791,13 @@ function exportSTL(source = 'human', mode = state.exportMode) {
     const download = triggerFileDownload(url, filename);
     addActivity(
       `STL export initiated — ${flavourInfo.label.toLowerCase()}`,
-      `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} 3D STL (${flavourInfo.summary.toLowerCase()}) from ${meshCount} solid form${meshCount === 1 ? '' : 's'}, ${triangleCount} facets, bounds ${bounds.size.join(' × ')}.`,
+      `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} 3D STL (${flavourInfo.summary.toLowerCase()}) from ${meshCount} solid form${meshCount === 1 ? '' : 's'}, ${triangleCount} facets, bounds ${bounds.size.join(' × ')}.${overlapNote ? ` Note: ${overlapNote}` : ''}`,
       source
     );
-    showToast(download.via === 'tab'
+    const toast = download.via === 'tab'
       ? `${flavourInfo.label} STL is downloading in a new tab`
-      : `${flavourInfo.label} STL download prepared`);
+      : `${flavourInfo.label} STL download prepared`;
+    showToast(overlapNote ? `${toast} · note: ${overlaps.length} overlapping form pair${overlaps.length === 1 ? '' : 's'} included` : toast);
     return {
       success: true,
       message: `3D STL export initiated (${flavourInfo.label.toLowerCase()}).`,
@@ -3807,7 +3809,9 @@ function exportSTL(source = 'human', mode = state.exportMode) {
       triangle_count: triangleCount,
       degenerate_facets_dropped: degenerate,
       bounds: bounds.size,
-      object_count: state.objects.length
+      object_count: state.objects.length,
+      overlap_count: overlaps.length,
+      overlap_note: overlapNote || null
     };
   } catch (error) {
     console.error('STL export failed:', error);
@@ -3858,14 +3862,15 @@ function renderExportDialog() {
   }
   const { facets, meshCount, bounds, overlaps } = estimatedExportFacets();
   const flavour = EXPORT_MODES[normaliseExportMode(state.exportMode)];
+  if (els.exportConfirmBtn) els.exportConfirmBtn.disabled = false;
+  const summary = `${flavour.label} · ${meshCount} solid form${meshCount === 1 ? '' : 's'} · ${facets} facets · bounds ${bounds.size.join(' × ')} · closed 3D body${meshCount === 1 ? '' : ' per form'}, binary .stl`;
   if (overlaps.length) {
+    // Informational only — the download is never blocked; each form keeps its own closed body.
     const pairs = overlaps.map(({ a, b }) => `${a} + ${b}`).join(', ');
-    els.exportSummary.textContent = `Cannot export — forms overlap in space: ${pairs}. Separate the overlapping forms (exact contact is fine) so every form is its own closed body.`;
-    if (els.exportConfirmBtn) els.exportConfirmBtn.disabled = true;
+    els.exportSummary.textContent = `${summary} · note: ${overlaps.length} form pair${overlaps.length === 1 ? '' : 's'} sharing space (${pairs}) will still export normally, one closed body per form`;
     return;
   }
-  if (els.exportConfirmBtn) els.exportConfirmBtn.disabled = false;
-  els.exportSummary.textContent = `${flavour.label} · ${meshCount} solid form${meshCount === 1 ? '' : 's'} · ${facets} facets · bounds ${bounds.size.join(' × ')} · closed 3D body${meshCount === 1 ? '' : ' per form'}, binary .stl`;
+  els.exportSummary.textContent = summary;
 }
 
 function setExportMode(mode) {
@@ -3926,6 +3931,7 @@ function addFileCardMessage(role, file) {
     node('strong', '', file.filename),
     node('small', '', `${file.object_count} form${file.object_count === 1 ? '' : 's'} · ${formatBytes(file.size)} · ${file.mode_label ? `${file.mode_label.toLowerCase()} ` : ''}3D STL${file.triangle_count ? ` · ${file.triangle_count} facets` : ''} · local file · nothing was uploaded`)
   );
+  if (file.overlap_note) meta.append(node('small', '', `Note: ${file.overlap_note}`));
   const link = node('a', 'export-card-link', 'Download ⤓');
   link.href = file.url;
   link.download = file.filename;

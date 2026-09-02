@@ -2,9 +2,10 @@
  * STL export verification.
  *
  * Guards the properties the studio cares about: the exported file is a real 3D solid,
- * never the flat 2D surfaces a naive mesh dump produces, overlapping forms are refused
- * instead of written as non-manifold intersections, both export flavours (colour /
- * plain solid) are written correctly, and procedural textures are baked into per-facet
+ * never the flat 2D surfaces a naive mesh dump produces, overlapping or duplicated
+ * forms are reliably detected so the app can surface them as an informational note
+ * (the download itself is never blocked), both export flavours (colour / plain
+ * solid) are written correctly, and procedural textures are baked into per-facet
  * colours.
  *
  * three.js is a dev dependency pinned to the version the browser loads from the CDN,
@@ -94,7 +95,7 @@ const outward = mirrored.triangles.filter((t) => {
 });
 check('mirrored geometry keeps outward normals', outward.length === mirrored.triangles.length);
 
-/* Overlapping forms must be refused, not written as intersecting facets. */
+/* Overlapping forms are detected so the app can note them — export never blocks. */
 function intersectionPairs(entries) {
   const group = new THREE.Group();
   entries.forEach((entry) => group.add(entry));
