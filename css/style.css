@@ -406,6 +406,24 @@ textarea::placeholder, input::placeholder { color: #909090; }
 .review-finding p { margin-top: 2px; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
 .review-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 17px; }
 
+/* STL export dialog: two explicit flavours — colour, or one dark solid grey body. */
+.export-modal-card { width: min(560px, 100%); background: linear-gradient(155deg, #ffffff, #f4f5f7 68%); color: var(--text); }
+.export-modal-card h2 { color: var(--text); }
+.export-modal-card .eyebrow { color: var(--text-muted); }
+.export-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 16px 0 12px; }
+.export-mode-option { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0,0,0,0.02); text-align: left; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
+.export-mode-option:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.export-mode-option[aria-checked="true"] { border-color: var(--text); background: rgba(13,13,13,0.05); box-shadow: inset 0 0 0 1px rgba(13,13,13,0.14); }
+.export-mode-option strong { color: var(--text); font-size: 11px; letter-spacing: -.02em; }
+.export-mode-option small { color: var(--text-muted); font-size: 8px; line-height: 1.5; }
+.export-mode-option code { padding: 0 3px; border-radius: 3px; background: rgba(0,0,0,0.06); font-family: var(--mono); font-size: 8px; }
+.export-mode-swatch { display: flex; overflow: hidden; width: 100%; height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.export-mode-swatch span { flex: 1 1 auto; }
+.export-mode-swatch-solid { background: linear-gradient(150deg, #4a4a4a, #2e2e2e 70%); }
+.export-summary { margin-bottom: 4px; padding: 9px 10px; border: 1px dashed var(--line-strong); border-radius: 9px; background: var(--surface-raised); color: var(--text-muted); font-family: var(--mono); font-size: 8px; line-height: 1.6; }
+.export-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 15px; }
+@media (max-width: 620px) { .export-mode-grid { grid-template-columns: 1fr; } }
+
 /* Bring-your-own-model & privacy wipe */
 .orbit-connection-card { width: min(560px, 100%); background: linear-gradient(155deg, #ffffff, #f4f5f7 68%); color: var(--text); }
 .orbit-connection-card h2 { color: var(--text); }

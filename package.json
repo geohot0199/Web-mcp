@@ -5,7 +5,8 @@
   "description": "Static human-agent 3D co-design workspace with goal-oriented WebMCP tools.",
   "type": "module",
   "scripts": {
-    "check": "node --check js/app.js && node --check js/agent-router.js && node --check js/orbit-connection.js && node scripts/run-agent-evals.mjs",
-    "evals": "node scripts/run-agent-evals.mjs"
+    "check": "node --check js/app.js && node --check js/agent-router.js && node --check js/orbit-connection.js && node --check js/stl-export.js && node scripts/run-agent-evals.mjs && node scripts/test-stl-export.mjs",
+    "evals": "node scripts/run-agent-evals.mjs",
+    "test:stl": "node scripts/test-stl-export.mjs"
   }
 }

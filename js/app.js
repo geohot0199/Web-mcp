@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import {
+  EXPORT_MODES,
+  MIN_SOLID_THICKNESS,
+  PLANE_THICKNESS,
+  SOLID_EXPORT_COLOR,
+  buildBinarySTL,
+  collectExportTriangles,
+  normaliseExportMode,
+  trianglesBounds
+} from './stl-export.js';
 import { routePrompt, extractRestoreTarget } from './agent-router.js';
 import {
   connectOrbit,
@@ -90,6 +99,10 @@ const els = {
   canvasExpandBtn: $('#canvas-expand-btn'),
   canvasCollapseBtn: $('#canvas-collapse-btn'),
   downloadStlBtn: $('#download-stl-btn'),
+  exportModeOptions: $$('[data-export-mode]'),
+  exportSummary: $('#export-summary'),
+  exportColorSwatch: $('#export-swatch-color'),
+  exportConfirmBtn: $('#export-confirm-btn'),
   gestureHud: $('#gesture-hud'),
   gestureHudName: $('#gesture-hud-name'),
   preferenceChips: $('#preference-chips'),
@@ -173,6 +186,10 @@ const state = {
   timeTravel: { active: false, eventId: null, liveSnapshot: null },
   activity: [],
   currentMode: 'planning',
+  /* Chosen STL flavour: 'color' (per-facet colour) or 'solid' (uniform dark grey body). */
+  exportMode: 'color',
+  /* While the export dialog is open the viewport previews the chosen flavour. */
+  exportPreview: null,
   permissions: { read: true, create: true, modify: true, delete: false, export: false, share: false }
 };
 
@@ -795,7 +812,24 @@ function makeGeometry(type, detail = 'standard') {
   }
 }
 
+/*
+ * Solid-mode surface. The STL carries no material, so the preview shows exactly what the
+ * file describes: one dark, fully opaque grey body — glass and other translucent presets
+ * lose their light, see-through look because the exported solid has no transparency.
+ */
+function makeSolidPreviewMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(SOLID_EXPORT_COLOR),
+    metalness: .08,
+    roughness: .74,
+    transparent: false,
+    opacity: 1,
+    flatShading: false
+  });
+}
+
 function makeMaterial(object) {
+  if (state.exportPreview === 'solid') return makeSolidPreviewMaterial();
   const preset = MATERIALS[object.material] || MATERIALS.plastic;
   const parameters = {
     color: new THREE.Color(validColor(object.color) ? object.color : preset.color),
@@ -832,9 +866,10 @@ function renderModel() {
     mesh.position.set(...object.position);
     mesh.rotation.set(...object.rotation);
     mesh.scale.set(...object.scale);
-    mesh.castShadow = object.material !== 'glass';
+    const solidPreview = state.exportPreview === 'solid';
+    mesh.castShadow = solidPreview || object.material !== 'glass';
     mesh.receiveShadow = true;
-    if (object.material === 'glass') mesh.renderOrder = 1;
+    if (!solidPreview && object.material === 'glass') mesh.renderOrder = 1;
     modelGroup.add(mesh);
   });
   updateSelectionVisual();
@@ -1295,7 +1330,7 @@ function actionLabel(action) {
   if (action.kind === 'snap') return 'Snap selected forms to grid';
   if (action.kind === 'add_constraint') return `Add ${action.constraint.label || titleCase(action.constraint.type)} constraint`;
   if (action.kind === 'restore_version') return `Restore ${action.versionLabel || 'saved version'}`;
-  if (action.kind === 'export') return 'Export STL model';
+  if (action.kind === 'export') return `Export 3D STL model — ${(EXPORT_MODES[normaliseExportMode(action.mode)] || EXPORT_MODES.color).label.toLowerCase()}`;
   if (action.kind === 'share') return 'Create shareable scene link';
   return 'Refine shared scene';
 }
@@ -2584,10 +2619,11 @@ async function executePendingProposal({ autoApproved = false } = {}) {
   hideBuildOverlay();
 
   // Side effects run only after the streamed model state is complete and remain proposal-gated.
-  if (!interrupted && selectedActions.some((action) => action.kind === 'export')) {
-    const file = exportSTL('agent');
+  const exportAction = selectedActions.find((action) => action.kind === 'export');
+  if (!interrupted && exportAction) {
+    const file = exportSTL('agent', exportAction.mode || state.exportMode);
     if (file.success) {
-      addMessage('agent', `I exported the current shared scene — ${file.filename} is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
+      addMessage('agent', `I exported the current shared scene as a ${file.mode_label.toLowerCase()} 3D STL — ${file.filename} (${file.triangle_count} facets, closed solid body) is downloading now, and the file is attached to this message so you can grab it again from the chat.`);
       addFileCardMessage('agent', file);
     } else {
       addMessage('agent', `The export could not be completed: ${file.message}`);
@@ -2870,13 +2906,17 @@ async function handleAgentRequest(text, { alreadyLogged = false } = {}) {
   }
   if (routedIntent.tool === 'export_stl' || routedIntent.tool === 'share_scene') {
     const isExport = routedIntent.tool === 'export_stl';
+    const flavour = normaliseExportMode(routedIntent.parameters?.mode || exportModeFromPhrase(request));
+    const flavourInfo = EXPORT_MODES[flavour];
     stageProposal({
-      title: isExport ? 'Export model as STL' : 'Create shareable scene link',
-      description: isExport ? 'Create a local STL download from the current shared scene.' : 'Generate and copy a local URL-safe link encoding this scene. No upload occurs.',
+      title: isExport ? `Export 3D model as STL — ${flavourInfo.label.toLowerCase()}` : 'Create shareable scene link',
+      description: isExport
+        ? `Create a local STL download from the current shared scene as a closed 3D solid (${flavourInfo.summary.toLowerCase()}).`
+        : 'Generate and copy a local URL-safe link encoding this scene. No upload occurs.',
       why: isExport ? 'File export is sensitive and remains visible for approval.' : 'Sharing creates a transferable design state and remains visible for approval.',
       intent: request,
       style: state.designContext.style,
-      actions: [{ kind: isExport ? 'export' : 'share' }]
+      actions: [isExport ? { kind: 'export', mode: flavour } : { kind: 'share' }]
     });
     addMessage('agent', `${isExport ? 'Export' : 'Sharing'} is staged as a sensitive action. Enable the matching permission and approve the visible card to continue.`);
     return;
@@ -3457,9 +3497,20 @@ function defineTools() {
   });
   registerTool({
     name: 'export_stl',
-    description: 'Stage an STL export request. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
-    parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => stageExternalPlan({ title: 'Export model as STL', description: 'Create an STL download of the currently visible shared model.', why: 'Exports are explicitly visible so the human remains in control of file creation.', intent: 'Export final model', style: state.designContext.style, actions: [{ kind: 'export' }] })
+    description: 'Stage a 3D STL export request. The file always contains the full three-dimensional solid body (flat sheets are thickened, never exported as 2D surfaces). Choose mode "color" for per-facet scene colour or "solid" for one uniform dark grey opaque body. Export is treated as a sensitive action and requires the human’s export permission plus proposal approval.',
+    parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['color', 'solid'], description: 'color = per-facet colour STL, solid = uniform dark grey solid STL.' } }, required: [] },
+    execute: async ({ mode } = {}) => {
+      const flavour = normaliseExportMode(mode || state.exportMode);
+      const label = EXPORT_MODES[flavour].label.toLowerCase();
+      return stageExternalPlan({
+        title: `Export 3D model as STL — ${label}`,
+        description: `Create an STL download of the currently visible shared model as a closed 3D solid (${EXPORT_MODES[flavour].summary.toLowerCase()}).`,
+        why: 'Exports are explicitly visible so the human remains in control of file creation.',
+        intent: 'Export final model',
+        style: state.designContext.style,
+        actions: [{ kind: 'export', mode: flavour }]
+      });
+    }
   });
   registerTool({
     name: 'share_scene',
@@ -3518,23 +3569,99 @@ function exposeLocalBridge() {
 }
 
 /* Export and shared state */
+/* Read an export flavour out of a natural-language request ("export it solid grey"). */
+function exportModeFromPhrase(text) {
+  const lower = String(text || '').toLowerCase();
+  if (/\bsolid\b|\bgrey\b|\bgray\b|monochrome|single colour|single color|plain stl/.test(lower)) return 'solid';
+  if (/colou?r/.test(lower)) return 'color';
+  return state.exportMode;
+}
+
 /*
- * Produce a local STL from the visible scene and start the browser download.
- * The object URL is intentionally kept alive for the session so the same file can
- * be re-downloaded from its chat card; the browser reclaims it on reload.
+ * Resolve the surface colour an object actually shows in the viewport, so the colour
+ * export matches what the human approved on screen.
  */
-function exportSTL(source = 'human') {
-  if (!viewportReady) return { success: false, message: 'STL export needs the 3D viewport, which is unavailable in this browser.' };
+function resolvedObjectColor(object) {
+  const preset = MATERIALS[object.material] || MATERIALS.plastic;
+  return validColor(object.color) ? object.color : preset.color;
+}
+
+/*
+ * Geometry used for export only. It is deliberately *not* the viewport geometry:
+ * a `plane` is a zero-thickness sheet on screen, which would land in the STL as a
+ * flat 2D surface. Here every form becomes a closed 3D body.
+ */
+function makeExportGeometry(object) {
+  if (object.type === 'plane') {
+    const depthScale = Math.max(Math.abs(safeNumber(object.scale?.[2], 1)), 1e-3);
+    // Local Z is the plane's thin axis (planes are laid flat by a -90° X rotation).
+    const depth = Math.max(PLANE_THICKNESS, MIN_SOLID_THICKNESS / depthScale);
+    return new THREE.BoxGeometry(1, 1, depth, 1, 1, 1);
+  }
+  return makeGeometry(object.type, object.detail);
+}
+
+/* Never let a collapsed axis flatten a body into a sheet. */
+function exportScaleAxis(value) {
+  const number = safeNumber(value, 1);
+  const sign = number < 0 ? -1 : 1;
+  return sign * Math.max(Math.abs(number), MIN_SOLID_THICKNESS);
+}
+
+/*
+ * Build a throwaway group of solid, export-safe meshes from scene state.
+ * Each mesh carries the colour the chosen export mode should write.
+ */
+function buildExportGroup(mode) {
+  const flavour = normaliseExportMode(mode);
+  const group = new THREE.Group();
+  group.name = 'Orbit export body';
+  state.objects.forEach((object) => {
+    const mesh = new THREE.Mesh(makeExportGeometry(object));
+    mesh.name = object.name;
+    mesh.position.set(...object.position);
+    mesh.rotation.set(...object.rotation);
+    mesh.scale.set(
+      exportScaleAxis(object.scale[0]),
+      exportScaleAxis(object.scale[1]),
+      exportScaleAxis(object.scale[2])
+    );
+    mesh.userData.exportColor = flavour === 'solid' ? SOLID_EXPORT_COLOR : resolvedObjectColor(object);
+    group.add(mesh);
+  });
+  group.updateMatrixWorld(true);
+  return group;
+}
+
+function disposeExportGroup(group) {
+  group.traverse((child) => { if (child.isMesh && child.geometry) child.geometry.dispose(); });
+}
+
+/*
+ * Produce a local, genuinely three-dimensional STL from the visible scene and start
+ * the browser download. `mode` is 'color' (per-facet colour) or 'solid' (uniform dark
+ * grey, fully opaque). The object URL is intentionally kept alive for the session so
+ * the same file can be re-downloaded from its chat card; the browser reclaims it on reload.
+ */
+function exportSTL(source = 'human', mode = state.exportMode) {
+  const flavour = normaliseExportMode(mode);
+  const flavourInfo = EXPORT_MODES[flavour];
   if (!state.objects.length) {
     setCanvasMessage('Add a form before exporting');
     return { success: false, message: 'Scene is empty.' };
   }
+  let group;
   try {
-    const exporter = new STLExporter();
-    const data = exporter.parse(modelGroup, { binary: true });
-    const blob = new Blob([data], { type: 'model/stl' });
+    group = buildExportGroup(flavour);
+    const { triangles, degenerate, meshCount } = collectExportTriangles(group);
+    if (!triangles.length) throw new Error('No printable geometry could be derived from this scene.');
+    const bounds = trianglesBounds(triangles);
+    if (bounds.flat) throw new Error('This scene is flat — add depth before exporting a 3D STL.');
+
+    const { buffer, triangleCount } = buildBinarySTL(triangles, { mode: flavour, solidColor: SOLID_EXPORT_COLOR });
+    const blob = new Blob([buffer], { type: 'model/stl' });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `orbit-model-${stamp}.stl`;
+    const filename = `orbit-model-${stamp}-${flavourInfo.suffix}.stl`;
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -3542,13 +3669,114 @@ function exportSTL(source = 'human') {
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    addActivity('STL export initiated', `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} STL from ${state.objects.length} form${state.objects.length === 1 ? '' : 's'}.`, source);
-    showToast('STL download prepared');
-    return { success: true, message: 'STL export initiated.', filename, size: blob.size, url, object_count: state.objects.length };
+    addActivity(
+      `STL export initiated — ${flavourInfo.label.toLowerCase()}`,
+      `${source === 'agent' ? 'The agent exported the shared scene' : 'A human export was requested'} — a local ${formatBytes(blob.size)} 3D STL (${flavourInfo.summary.toLowerCase()}) from ${meshCount} solid form${meshCount === 1 ? '' : 's'}, ${triangleCount} facets, bounds ${bounds.size.join(' × ')}.`,
+      source
+    );
+    showToast(`${flavourInfo.label} STL download prepared`);
+    return {
+      success: true,
+      message: `3D STL export initiated (${flavourInfo.label.toLowerCase()}).`,
+      filename,
+      size: blob.size,
+      url,
+      mode: flavour,
+      mode_label: flavourInfo.label,
+      triangle_count: triangleCount,
+      degenerate_facets_dropped: degenerate,
+      bounds: bounds.size,
+      object_count: state.objects.length
+    };
   } catch (error) {
     console.error('STL export failed:', error);
     showToast('STL export could not be created', 'error');
     return { success: false, message: error.message };
+  } finally {
+    if (group) disposeExportGroup(group);
+  }
+}
+
+/*
+ * Export dialog. Two flavours, always the same 3D solid underneath:
+ *   1 - Colour : per-facet scene colour written into the STL.
+ *   2 - Solid  : one full grey body, dark and fully opaque.
+ * Selecting a flavour previews it live in the viewport so the file matches the view.
+ */
+function estimatedExportFacets() {
+  const group = buildExportGroup(state.exportMode);
+  const { triangles, meshCount } = collectExportTriangles(group);
+  const bounds = trianglesBounds(triangles);
+  disposeExportGroup(group);
+  return { facets: triangles.length, meshCount, bounds };
+}
+
+function renderExportSwatches() {
+  if (!els.exportColorSwatch) return;
+  els.exportColorSwatch.replaceChildren();
+  const colors = state.objects.slice(0, 8).map(resolvedObjectColor);
+  (colors.length ? colors : [DEFAULT_OBJECT_COLOR]).forEach((color) => {
+    const band = node('span');
+    band.style.background = color;
+    els.exportColorSwatch.append(band);
+  });
+}
+
+function renderExportDialog() {
+  els.exportModeOptions.forEach((option) => {
+    const active = option.dataset.exportMode === state.exportMode;
+    option.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  renderExportSwatches();
+  if (!els.exportSummary) return;
+  if (!state.objects.length) {
+    els.exportSummary.textContent = 'Scene is empty — add a form before exporting.';
+    return;
+  }
+  const { facets, meshCount, bounds } = estimatedExportFacets();
+  const flavour = EXPORT_MODES[normaliseExportMode(state.exportMode)];
+  els.exportSummary.textContent = `${flavour.label} · ${meshCount} solid form${meshCount === 1 ? '' : 's'} · ${facets} facets · bounds ${bounds.size.join(' × ')} · closed 3D body, binary .stl`;
+}
+
+function setExportMode(mode) {
+  state.exportMode = normaliseExportMode(mode);
+  setExportPreview(state.exportMode);
+  renderExportDialog();
+}
+
+/* Preview the chosen flavour in the live viewport; 'solid' shows the dark opaque body. */
+function setExportPreview(mode) {
+  const next = mode ? normaliseExportMode(mode) : null;
+  if (state.exportPreview === next) return;
+  state.exportPreview = next;
+  renderModel();
+}
+
+function openExportDialog() {
+  if (state.timeTravel.active) {
+    setCanvasMessage('Return to the live scene before exporting');
+    showToast('Time-travel preview is read-only', 'error');
+    return;
+  }
+  setExportPreview(state.exportMode);
+  renderExportDialog();
+  openModal('export-modal');
+}
+
+function closeExportDialog() {
+  setExportPreview(null);
+  closeModal('export-modal');
+}
+
+function confirmExportFromDialog() {
+  const file = exportSTL('human', state.exportMode);
+  closeExportDialog();
+  if (file.success) {
+    addFileCardMessage('human', file);
+    setCanvasMessage(`${file.mode_label} 3D STL download started — a copy stays attached in the chat`);
+  } else if (file.message !== 'Scene is empty.') {
+    setCanvasMessage(file.message);
+    showToast(file.message, 'error');
   }
 }
 
@@ -3566,7 +3794,7 @@ function addFileCardMessage(role, file) {
   const meta = node('div', 'export-card-meta');
   meta.append(
     node('strong', '', file.filename),
-    node('small', '', `${file.object_count} form${file.object_count === 1 ? '' : 's'} · ${formatBytes(file.size)} · local STL · nothing was uploaded`)
+    node('small', '', `${file.object_count} form${file.object_count === 1 ? '' : 's'} · ${formatBytes(file.size)} · ${file.mode_label ? `${file.mode_label.toLowerCase()} ` : ''}3D STL${file.triangle_count ? ` · ${file.triangle_count} facets` : ''} · local file · nothing was uploaded`)
   );
   const link = node('a', 'export-card-link', 'Download ⤓');
   link.href = file.url;
@@ -3736,6 +3964,8 @@ function performWipe() {
     timeTravel: { active: false, eventId: null, liveSnapshot: null },
     activity: [],
     currentMode: 'planning',
+    exportMode: 'color',
+    exportPreview: null,
     permissions: { read: true, create: true, modify: true, delete: false, export: false, share: false }
   });
   $$('[data-permission]').forEach((input) => { input.checked = Boolean(state.permissions[input.dataset.permission]); });
@@ -3928,6 +4158,11 @@ async function buildOrbitPlan(request, liveContext) {
 /* DOM interaction */
 function openModal(id) { $(`#${id}`).classList.remove('hidden'); }
 function closeModal(id) { $(`#${id}`).classList.add('hidden'); }
+/* Closing the export dialog must also drop its live viewport preview. */
+function dismissModal(id) {
+  if (id === 'export-modal') setExportPreview(null);
+  closeModal(id);
+}
 
 function bindEvents() {
   $$('[data-add]').forEach((button) => button.addEventListener('click', () => createPrimitive(button.dataset.add)));
@@ -3936,7 +4171,9 @@ function bindEvents() {
   $('#apply-review-btn').addEventListener('click', planFromReview);
   $('#checkpoint-btn').addEventListener('click', () => createVersion(`Checkpoint ${state.versions.length + 1}`));
   $('#new-version-btn').addEventListener('click', () => createVersion(`Checkpoint ${state.versions.length + 1}`));
-  $('#export-btn').addEventListener('click', exportSTL);
+  $('#export-btn').addEventListener('click', openExportDialog);
+  els.exportModeOptions.forEach((option) => option.addEventListener('click', () => setExportMode(option.dataset.exportMode)));
+  els.exportConfirmBtn.addEventListener('click', confirmExportFromDialog);
   $('#focus-scene-btn').addEventListener('click', focusScene);
   $('#fit-view-btn').addEventListener('click', focusScene);
   $('#grid-snap-btn').addEventListener('click', snapSelectedToGrid);
@@ -4045,20 +4282,7 @@ function bindEvents() {
   els.canvasCollapseBtn.addEventListener('click', () => setViewportFocus(false));
 
   // Manual STL download: a human-initiated export straight from the canvas toolbar.
-  els.downloadStlBtn.addEventListener('click', () => {
-    if (state.timeTravel.active) {
-      setCanvasMessage('Return to the live scene before exporting');
-      showToast('Time-travel preview is read-only', 'error');
-      return;
-    }
-    const file = exportSTL('human');
-    if (file.success) {
-      addFileCardMessage('human', file);
-      setCanvasMessage('STL download started — a copy stays attached in the chat');
-    } else if (file.message !== 'Scene is empty.') {
-      setCanvasMessage(file.message);
-    }
-  });
+  els.downloadStlBtn.addEventListener('click', openExportDialog);
 
   els.agentForm.addEventListener('submit', (event) => { event.preventDefault(); handleAgentRequest(els.agentInput.value); });
   els.voiceButton.addEventListener('click', toggleVoiceInput);
@@ -4143,12 +4367,12 @@ function bindEvents() {
       persistWorkspace();
     });
   });
-  $$('[data-close-modal]').forEach((button) => button.addEventListener('click', () => closeModal(button.dataset.closeModal)));
-  $$('.modal-layer').forEach((layer) => layer.addEventListener('click', (event) => { if (event.target === layer) closeModal(layer.id); }));
+  $$('[data-close-modal]').forEach((button) => button.addEventListener('click', () => dismissModal(button.dataset.closeModal)));
+  $$('.modal-layer').forEach((layer) => layer.addEventListener('click', (event) => { if (event.target === layer) dismissModal(layer.id); }));
 
   window.addEventListener('keydown', (event) => {
     const inTextField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
-    if (event.key === 'Escape') { $$('.modal-layer').forEach((layer) => layer.classList.add('hidden')); return; }
+    if (event.key === 'Escape') { $$('.modal-layer').forEach((layer) => dismissModal(layer.id)); return; }
     if (inTextField) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault();
