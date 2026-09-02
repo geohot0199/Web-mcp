@@ -6,7 +6,7 @@
  * Export : OBJ · STL (ascii + binary) · PLY · glTF 2.0 (JSON, base64 buffer)
  */
 
-import { mesh, weld, cleanMesh, bounds, triangleCount, vertexCount, getVertex, sub, cross, normalize, volume } from './geom.js';
+import { mesh, weld, cleanMesh, bounds, triangleCount, vertexCount, getVertex, sub, cross, normalize, volume, transformMesh, multiply } from './geom.js';
 
 /* ------------------------------------------------------------------ util */
 
@@ -28,7 +28,8 @@ export const SUPPORTED_EXPORT = ['obj', 'stl', 'stl-ascii', 'ply', 'gltf'];
 
 /* ---------------------------------------------------------------- import */
 
-export function parseOBJ(text) {
+export function parseOBJ(text, options = {}) {
+  const maxTriangles = options.maxTriangles;
   const positions = [];
   const out = mesh();
   const remap = new Map();
@@ -53,6 +54,9 @@ export function parseOBJ(text) {
     if (parts[0] === 'v') {
       positions.push([Number(parts[1]) || 0, Number(parts[2]) || 0, Number(parts[3]) || 0]);
     } else if (parts[0] === 'f') {
+      if (maxTriangles !== undefined && out.indices.length / 3 >= maxTriangles) {
+        throw new Error(`parseOBJ: file exceeds the ${maxTriangles}-triangle budget — refusing to continue`);
+      }
       const face = parts.slice(1).map(pushVertex).filter((i) => i !== null);
       for (let i = 1; i < face.length - 1; i += 1) out.indices.push(face[0], face[i], face[i + 1]);
     }
@@ -61,9 +65,9 @@ export function parseOBJ(text) {
   return weld(out);
 }
 
-export function parseSTL(data) {
+export function parseSTL(data, options = {}) {
   if (typeof data === 'string') {
-    if (/^\s*solid/i.test(data) && /facet\s+normal/i.test(data)) return parseSTLAscii(data);
+    if (/^\s*solid/i.test(data) && /facet\s+normal/i.test(data)) return parseSTLAscii(data, options);
     throw new Error('parseSTL: string input is not ASCII STL');
   }
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -71,14 +75,17 @@ export function parseSTL(data) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.length >= 84) {
     const count = view.getUint32(80, true);
-    if (84 + count * 50 === bytes.length) return parseSTLBinary(view, count);
+    if (84 + count * 50 === bytes.length) return parseSTLBinary(view, count, options);
   }
   const text = new TextDecoder().decode(bytes);
-  if (/facet\s+normal/i.test(text)) return parseSTLAscii(text);
+  if (/facet\s+normal/i.test(text)) return parseSTLAscii(text, options);
   throw new Error(`parseSTL: unrecognised STL (header: ${header.slice(0, 20)})`);
 }
 
-function parseSTLBinary(view, count) {
+function parseSTLBinary(view, count, options = {}) {
+  if (options.maxTriangles !== undefined && count > options.maxTriangles) {
+    throw new Error(`parseSTL: file declares ${count.toLocaleString()} triangles — above the ${options.maxTriangles.toLocaleString()}-triangle budget, refusing to decode`);
+  }
   const out = mesh();
   let offset = 84;
   for (let i = 0; i < count; i += 1) {
@@ -94,12 +101,15 @@ function parseSTLBinary(view, count) {
   return weld(out);
 }
 
-function parseSTLAscii(text) {
+function parseSTLAscii(text, options = {}) {
   const out = mesh();
   const numbers = /vertex\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)/g;
   let match;
   const buffer = [];
   while ((match = numbers.exec(text)) !== null) {
+    if (options.maxTriangles !== undefined && buffer.length / 3 >= options.maxTriangles * 3) {
+      throw new Error(`parseSTL: file exceeds the ${options.maxTriangles}-triangle budget — refusing to continue`);
+    }
     buffer.push([Number(match[1]), Number(match[2]), Number(match[3])]);
   }
   for (let i = 0; i + 2 < buffer.length; i += 3) {
@@ -110,27 +120,45 @@ function parseSTLAscii(text) {
   return weld(out);
 }
 
-export function parsePLY(text) {
+export function parsePLY(text, options = {}) {
   if (typeof text !== 'string' || !/^\s*ply/i.test(text)) throw new Error('parsePLY: not a PLY file');
   const lines = String(text).split(/\r?\n/);
   let vertexTotal = 0;
   let faceTotal = 0;
   let headerEnd = -1;
-  const properties = [];
+  let inVertexElement = false;
+  const properties = []; // property names of the vertex element, in order
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i].trim();
-    if (/^element\s+vertex\s+(\d+)/.test(line)) vertexTotal = Number(RegExp.$1);
-    else if (/^element\s+face\s+(\d+)/.test(line)) faceTotal = Number(RegExp.$1);
-    else if (/^property\s+\S+\s+(\S+)/.test(line) && !faceTotal) properties.push(RegExp.$1);
-    else if (line === 'end_header') { headerEnd = i; break; }
+    const element = line.match(/^element\s+(\w+)\s+(\d+)/);
+    if (element) {
+      inVertexElement = element[1] === 'vertex';
+      if (inVertexElement) vertexTotal = Number(element[2]);
+      else if (element[1] === 'face') faceTotal = Number(element[2]);
+      continue;
+    }
+    const property = line.match(/^property\s+(?:list\s+\S+\s+\S+|\S+)\s+(\S+)/);
+    if (property && inVertexElement) properties.push(property[1]);
+    if (line === 'end_header') { headerEnd = i; break; }
   }
   if (headerEnd < 0) throw new Error('parsePLY: missing end_header');
+  // Each coordinate is located by *name*, independently — valid PLY files may
+  // interleave normals or colours between x, y and z, or declare them in any
+  // order, and assuming adjacency corrupts every vertex position.
+  const xi = properties.indexOf('x');
+  const yi = properties.indexOf('y');
+  const zi = properties.indexOf('z');
+  if (xi < 0 || yi < 0 || zi < 0) {
+    throw new Error(`parsePLY: vertex element must declare x, y and z properties (found: ${properties.join(', ') || 'none'})`);
+  }
+  if (options.maxTriangles !== undefined && faceTotal > options.maxTriangles) {
+    throw new Error(`parsePLY: file declares ${faceTotal.toLocaleString()} faces — above the ${options.maxTriangles.toLocaleString()}-triangle budget, refusing to decode`);
+  }
   const out = mesh();
-  const xi = Math.max(0, properties.indexOf('x'));
   let cursor = headerEnd + 1;
   for (let i = 0; i < vertexTotal; i += 1) {
     const parts = (lines[cursor++] || '').trim().split(/\s+/).map(Number);
-    out.vertices.push(parts[xi] || 0, parts[xi + 1] || 0, parts[xi + 2] || 0);
+    out.vertices.push(parts[xi] || 0, parts[yi] || 0, parts[zi] || 0);
   }
   for (let i = 0; i < faceTotal; i += 1) {
     const parts = (lines[cursor++] || '').trim().split(/\s+/).map(Number);
@@ -141,7 +169,31 @@ export function parsePLY(text) {
   return weld(out);
 }
 
-export function parseGLTF(source) {
+/** Node local matrix: T · R(quaternion) · S, column-major like compose(). */
+function gltfNodeMatrix(node) {
+  const t = node.translation || [0, 0, 0];
+  const s = node.scale || [1, 1, 1];
+  const r = node.rotation;
+  let m00 = 1; let m01 = 0; let m02 = 0;
+  let m10 = 0; let m11 = 1; let m12 = 0;
+  let m20 = 0; let m21 = 0; let m22 = 1;
+  if (Array.isArray(r) && r.length === 4) {
+    let [x, y, z, w] = r;
+    const len = Math.hypot(x, y, z, w);
+    if (len > 0) { x /= len; y /= len; z /= len; w /= len; }
+    m00 = 1 - 2 * (y * y + z * z); m01 = 2 * (x * y - z * w); m02 = 2 * (x * z + y * w);
+    m10 = 2 * (x * y + z * w); m11 = 1 - 2 * (x * x + z * z); m12 = 2 * (y * z - x * w);
+    m20 = 2 * (x * z - y * w); m21 = 2 * (y * z + x * w); m22 = 1 - 2 * (x * x + y * y);
+  }
+  return [
+    m00 * s[0], m10 * s[0], m20 * s[0], 0,
+    m01 * s[1], m11 * s[1], m21 * s[1], 0,
+    m02 * s[2], m12 * s[2], m22 * s[2], 0,
+    t[0], t[1], t[2], 1
+  ];
+}
+
+export function parseGLTF(source, options = {}) {
   const json = typeof source === 'string' ? JSON.parse(source) : source;
   const buffers = (json.buffers || []).map((buffer) => {
     // Only self-contained data URIs are accepted. A relative path or an http(s)
@@ -154,31 +206,113 @@ export function parseGLTF(source) {
     if (comma < 0) throw new Error('parseGLTF: malformed data uri');
     return fromBase64(buffer.uri.slice(comma + 1));
   });
+  const componentBytes = (type) => ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[type] || 1);
   const readAccessor = (index) => {
     const accessor = json.accessors[index];
     const view = json.bufferViews[accessor.bufferView];
     const bytes = buffers[view.buffer];
     const offset = (view.byteOffset || 0) + (accessor.byteOffset || 0);
-    const components = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[accessor.type] || 1;
+    const components = componentBytes(accessor.type);
+    const compSize = { 5126: 4, 5125: 4, 5123: 2, 5121: 1 }[accessor.componentType];
+    if (!compSize) throw new Error(`parseGLTF: unsupported componentType ${accessor.componentType}`);
+    const tight = components * compSize;
+    // Interleaved vertex data (byteStride > the attribute's own size) must be
+    // read with its stride; assuming a tight layout decodes padding or the
+    // neighbouring attribute as coordinates.
+    const stride = view.byteStride && view.byteStride > tight ? view.byteStride : tight;
+    if (offset + (accessor.count - 1) * stride + tight > bytes.byteLength) {
+      throw new Error('parseGLTF: accessor reads past the end of its buffer');
+    }
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const values = [];
-    for (let i = 0; i < accessor.count * components; i += 1) {
-      if (accessor.componentType === 5126) values.push(dv.getFloat32(offset + i * 4, true));
-      else if (accessor.componentType === 5125) values.push(dv.getUint32(offset + i * 4, true));
-      else if (accessor.componentType === 5123) values.push(dv.getUint16(offset + i * 2, true));
-      else if (accessor.componentType === 5121) values.push(dv.getUint8(offset + i));
-      else throw new Error(`parseGLTF: unsupported componentType ${accessor.componentType}`);
+    for (let i = 0; i < accessor.count; i += 1) {
+      const base = offset + i * stride;
+      for (let c = 0; c < components; c += 1) {
+        const at = base + c * compSize;
+        if (accessor.componentType === 5126) values.push(dv.getFloat32(at, true));
+        else if (accessor.componentType === 5125) values.push(dv.getUint32(at, true));
+        else if (accessor.componentType === 5123) values.push(dv.getUint16(at, true));
+        else values.push(dv.getUint8(at));
+      }
     }
     return values;
   };
+  const primitiveTriangles = (primitive) => {
+    if (primitive.indices !== undefined) {
+      const count = json.accessors[primitive.indices].count;
+      return Math.floor(count / 3);
+    }
+    const count = json.accessors[primitive.attributes.POSITION].count;
+    return Math.floor(count / 3);
+  };
+  // The asset's total triangle count is declared in the accessors, so the
+  // budget is enforced *before* any buffer is decoded — a hostile 100 GB
+  // declaration is refused without ever allocating.
+  if (options.maxTriangles !== undefined) {
+    const nodes = json.nodes || [];
+    const totalTriangles = (count) => {
+      let sum = 0;
+      const walk = (nodeIndex) => {
+        const node = nodes[nodeIndex];
+        if (!node) return;
+        const meshDef = (json.meshes || [])[node.mesh];
+        for (const primitive of meshDef?.primitives || []) {
+          if (primitive.attributes?.POSITION !== undefined) sum += primitiveTriangles(primitive);
+        }
+        for (const child of node.children || []) walk(child);
+      };
+      for (const nodeIndex of count) walk(nodeIndex);
+      return sum;
+    };
+    const declared = totalTriangles((json.scenes && Array.isArray(json.scenes[0]?.nodes) && json.scenes[0].nodes.length)
+      ? json.scenes[0].nodes
+      : nodes.map((_, i) => i));
+    if (declared > options.maxTriangles) {
+      throw new Error(`parseGLTF: asset declares ${declared.toLocaleString()} triangles — above the ${options.maxTriangles.toLocaleString()}-triangle budget, refusing to decode`);
+    }
+  }
+  const nodes = json.nodes || [];
+  const sceneId = json.scene !== undefined ? json.scene : 0;
+  const sceneNodes = (json.scenes && Array.isArray(json.scenes[sceneId]?.nodes) && json.scenes[sceneId].nodes.length)
+    ? json.scenes[sceneId].nodes
+    : nodes.map((_, i) => i);
   const parts = [];
-  for (const m of json.meshes || []) {
-    for (const primitive of m.primitives || []) {
-      const positions = readAccessor(primitive.attributes.POSITION);
-      const indices = primitive.indices !== undefined
-        ? readAccessor(primitive.indices)
-        : positions.map((_, i) => i / 3).filter((n) => Number.isInteger(n));
-      parts.push(mesh(positions, indices));
+  const visit = (nodeIndex, parentMatrix) => {
+    const node = nodes[nodeIndex];
+    if (!node) return;
+    const world = parentMatrix ? multiply(parentMatrix, gltfNodeMatrix(node)) : gltfNodeMatrix(node);
+    if (node.mesh !== undefined) {
+      const meshDef = (json.meshes || [])[node.mesh];
+      for (const primitive of meshDef?.primitives || []) {
+        if (primitive.attributes?.POSITION === undefined) continue;
+        const positions = readAccessor(primitive.attributes.POSITION);
+        const indices = primitive.indices !== undefined
+          ? readAccessor(primitive.indices)
+          : positions.map((_, i) => i / 3).filter((n) => Number.isInteger(n));
+        parts.push(transformMesh(mesh(positions, indices), world));
+      }
+    }
+    for (const child of node.children || []) visit(child, world);
+  };
+  for (const nodeIndex of sceneNodes) visit(nodeIndex, null);
+  // Degenerate-but-legal files carry meshes without any node/scene graph:
+  // instantiate every primitive at the identity so those still import.
+  if (!parts.length && !nodes.length && (json.meshes || []).length) {
+    for (const meshDef of json.meshes) {
+      for (const primitive of meshDef.primitives || []) {
+        if (primitive.attributes?.POSITION === undefined) continue;
+        const positions = readAccessor(primitive.attributes.POSITION);
+        const indices = primitive.indices !== undefined
+          ? readAccessor(primitive.indices)
+          : positions.map((_, i) => i / 3).filter((n) => Number.isInteger(n));
+        parts.push(mesh(positions, indices));
+      }
+    }
+  }
+  if (options.maxTriangles !== undefined) {
+    const total = parts.reduce((sum, part) => sum + part.indices.length / 3, 0);
+    if (total > options.maxTriangles) {
+      throw new Error(`parseGLTF: asset has ${Math.round(total).toLocaleString()} triangles — above the ${options.maxTriangles.toLocaleString()}-triangle budget, refusing to import`);
     }
   }
   if (!parts.length) throw new Error('parseGLTF: no mesh primitives found');
@@ -190,7 +324,7 @@ export function parseGLTF(source) {
   return weld(merged);
 }
 
-export function parseGLB(bytes) {
+export function parseGLB(bytes, options = {}) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   if (view.getUint32(0, true) !== 0x46546c67) throw new Error('parseGLB: bad magic');
@@ -209,18 +343,23 @@ export function parseGLB(bytes) {
   if (binary && json.buffers?.[0] && !json.buffers[0].uri) {
     json.buffers[0].uri = `data:application/octet-stream;base64,${toBase64(binary)}`;
   }
-  return parseGLTF(json);
+  return parseGLTF(json, options);
 }
 
-/** Format-sniffing entry point used by the `import_mesh` tool. */
-export function importMesh(data, format = 'auto') {
+/**
+ * Format-sniffing entry point used by the `import_mesh` tool. `options`
+ * carries the scene's remaining triangle budget; every parser enforces it
+ * while decoding so an oversized asset is refused before it can exhaust
+ * memory, not merely rejected after it has already been stored.
+ */
+export function importMesh(data, format = 'auto', options = {}) {
   const fmt = format === 'auto' ? sniffFormat(data) : String(format).toLowerCase();
   switch (fmt) {
-    case 'obj': return parseOBJ(typeof data === 'string' ? data : new TextDecoder().decode(data));
-    case 'stl': return parseSTL(data);
-    case 'ply': return parsePLY(typeof data === 'string' ? data : new TextDecoder().decode(data));
-    case 'gltf': return parseGLTF(typeof data === 'string' ? data : new TextDecoder().decode(data));
-    case 'glb': return parseGLB(data);
+    case 'obj': return parseOBJ(typeof data === 'string' ? data : new TextDecoder().decode(data), options);
+    case 'stl': return parseSTL(data, options);
+    case 'ply': return parsePLY(typeof data === 'string' ? data : new TextDecoder().decode(data), options);
+    case 'gltf': return parseGLTF(typeof data === 'string' ? data : new TextDecoder().decode(data), options);
+    case 'glb': return parseGLB(data, options);
     default: throw new Error(`importMesh: unsupported format "${fmt}"`);
   }
 }

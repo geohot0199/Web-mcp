@@ -6,13 +6,13 @@
 ![webmcp](https://img.shields.io/badge/WebMCP-36%20agent%20tools-0d0d0d?style=flat-square)
 ![csg](https://img.shields.io/badge/CSG-exact%20BSP%20booleans-0d0d0d?style=flat-square)
 ![autonomy](https://img.shields.io/badge/autonomy-full%20%C2%B7%20no%20approval%20step-7c5cff?style=flat-square)
-![tests](https://img.shields.io/badge/tests-386%20passing-3ddc97?style=flat-square)
+![tests](https://img.shields.io/badge/tests-474%20passing-3ddc97?style=flat-square)
 ![runtime](https://img.shields.io/badge/runtime-static%20browser%20%C2%B7%20no%20backend-4d4d4d?style=flat-square)
 
 ```bash
 git clone https://github.com/geohot0199/orbit && cd orbit
 npm run serve        # → http://localhost:8080
-npm run check        # 386 assertions: kernel · protocol · adversarial
+npm run check        # 474 assertions: kernel · protocol · adversarial
 ```
 
 ---
@@ -182,6 +182,6 @@ external buffer URIs, conflicting edits and resource exhaustion.
 
 ---
 
-*The agent has full authority. The kernel has exact geometry, hard limits and 386 tests. That trade — structural safety instead of a human veto — is the whole idea.*
+*The agent has full authority. The kernel has exact geometry, hard limits and 474 tests. That trade — structural safety instead of a human veto — is the whole idea.*
 
 **discover → call → mutate → verify → undo** ✦

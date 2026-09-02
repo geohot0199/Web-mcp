@@ -256,6 +256,73 @@ check('duplicate ids are rejected', !validateGraph({ nodes: [{ id: 'a', type: 'p
 check('unknown node type is rejected', !validateGraph({ nodes: [{ id: 'a', type: 'wormhole' }] }).valid);
 check('boolean node needs two inputs', !validateGraph({ nodes: [{ id: 'p', type: 'primitive' }, { id: 'b', type: 'boolean', inputs: ['p'] }] }).valid);
 
+/* ------------------------- PR-12 Qodo regressions (expressions, geometry) */
+
+// #10 — unary minus must bind looser than exponentiation.
+near('−2^2 evaluates to −4 (unary below ^)', evaluateExpression('-2 ^ 2'), -4);
+near('signed exponents still parse', evaluateExpression('2 ^ -2'), 0.25);
+near('double negation survives the rework', evaluateExpression('--2'), 2);
+near('plain exponent unchanged', evaluateExpression('2 ^ 10'), 1024);
+near('unary in a product', evaluateExpression('-2 * -3'), 6);
+
+// #14 — partial revolves must close with end caps.
+const revProfile = [[0, -1], [0.5, -1], [0.5, 1], [0, 1], [0, -1]];
+const quarterRevolve = revolve(revProfile, 64, Math.PI / 2);
+solid('partial revolve is a closed solid', quarterRevolve);
+near('quarter revolve volume = 1/4 of the cylinder', volume(quarterRevolve), (Math.PI * 0.25 * 2) / 4, 1e-3);
+const openHalfRevolve = revolve([[0.3, -1], [0.7, -1], [0.7, 1], [0.3, 1]], 64, Math.PI);
+solid('open-profile half revolve is a closed solid', openHalfRevolve);
+// An open chain revolves the region it encloses with the axis: a half
+// cylinder of radius 0.7, so V = 1/2 · π · r² · h.
+near('open-profile half revolve volume = half cylinder', volume(openHalfRevolve), Math.PI * 0.49, 1e-3);
+const openFullRevolve = revolve([[0.3, -1], [0.7, -1], [0.7, 1], [0.3, 1]], LIMITS.maxSegments);
+solid('open-profile full revolve is a closed solid', openFullRevolve);
+near('open-profile full revolve volume = full cylinder', volume(openFullRevolve), 2 * Math.PI * 0.49, 1e-3);
+
+// #12 — multi-shell intersection must distribute over every B shell.
+{
+  const a = box(1, 1, 1);
+  const farShell = transformMesh(box(1, 1, 1), compose([5, 0, 0]));
+  const nearShell = transformMesh(box(1, 1, 1), compose([0.5, 0, 0]));
+  const multiB = mergeMeshes([farShell, nearShell]);
+  check('multi-shell operand has two shells', manifoldReport(multiB).shells === 2);
+  near('A ∩ (B_far ∪ B_near) reaches the shell that overlaps A', volume(intersect(a, multiB)), 0.5, 1e-6);
+}
+
+// #11 — long-edge T-junction repair must stay linear (DDA cell walk).
+{
+  const started = Date.now();
+  const longDrill = subtract(box(1, 1, 40), transformMesh(box(0.4, 0.4, 2), compose([1, 0, 10])));
+  const elapsed = Date.now() - started;
+  check('long-edge CSG + T-junction repair stays fast', elapsed < 20000, `${elapsed}ms`);
+  check('long-edge drill stays watertight', manifoldReport(longDrill).closed);
+}
+
+// #15 — collision must be symmetric and catch surface crossings.
+{
+  const big = box(2, 2, 2);
+  const small = box(0.5, 0.5, 0.5);
+  check('enclosed body collides (big, small) order', collide(big, small).colliding);
+  check('enclosed body collides (small, big) order', collide(small, big).colliding);
+  const plate = box(2, 0.1, 2);
+  const spike = box(0.4, 2, 0.4);
+  check('surface-crossing overlap collides (no vertex inside the other)', collide(plate, spike).colliding);
+}
+
+// #16 — reversed winding must not produce negative inertia.
+{
+  const base = box(1, 1, 1);
+  const flipped = [];
+  for (let i = 0; i < base.indices.length; i += 3) flipped.push(base.indices[i], base.indices[i + 2], base.indices[i + 1]);
+  const reversed = { vertices: base.vertices, indices: flipped };
+  check('reversed winding has negative signed volume', volume(reversed) < 0);
+  const revProps = massProperties(reversed, null, 1);
+  check('reversed winding keeps positive mass', revProps.mass > 0);
+  check('reversed winding keeps a positive inertia tensor',
+    revProps.inertia_tensor.Ixx > 0 && revProps.inertia_tensor.Iyy > 0 && revProps.inertia_tensor.Izz > 0);
+  near('reversed winding matches the outward tensor', revProps.inertia_tensor.Ixx, 1 / 6, 1e-9);
+}
+
 /* --------------------------------------------------------------- 7. I/O */
 
 const roundTrip = box(1, 2, 3);
@@ -281,6 +348,94 @@ check('glTF declares version 2.0', gltfJson.asset.version === '2.0');
 check('glTF embeds a material', gltfJson.materials.length === 1);
 check('glTF buffer is a data URI', gltfJson.buffers[0].uri.startsWith('data:'));
 near('glTF round-trip volume', volume(parseGLTF(gltfText)), 6, 1e-5);
+
+// #7 — PLY coordinate columns are located by name, not by adjacency.
+{
+  const scrambled = [
+    'ply', 'format ascii 1.0',
+    'element vertex 6',
+    'property float x', 'property float w', 'property float y', 'property float z',
+    'element face 8', 'property list uchar int vertex_index', 'end_header',
+    '1 0 0 0', '0 0 1 0', '-1 0 0 0', '0 0 -1 0', '0 0 0 1', '0 0 0 -1',
+    '3 0 1 4', '3 1 2 4', '3 2 3 4', '3 3 0 4',
+    '3 0 5 1', '3 1 5 2', '3 2 5 3', '3 3 5 0'
+  ].join('\n');
+  const octa = parsePLY(scrambled);
+  near('PLY with an interleaved property keeps correct positions', volume(octa), 4 / 3, 1e-9);
+  check('scrambled-property PLY is a closed solid', manifoldReport(octa).closed);
+}
+
+// #6 — glTF node hierarchy and transforms are applied on import.
+{
+  const buildGltf = (nodes, sceneNodes = [0]) => {
+    const cube = box(1, 1, 1);
+    const positions = new Float32Array(cube.vertices);
+    const indices = new Uint32Array(cube.indices);
+    const posBytes = new Uint8Array(positions.buffer);
+    const idxBytes = new Uint8Array(indices.buffer);
+    const merged = new Uint8Array(posBytes.length + idxBytes.length);
+    merged.set(posBytes, 0);
+    merged.set(idxBytes, posBytes.length);
+    return JSON.stringify({
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: sceneNodes }],
+      nodes,
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: positions.length / 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5125, count: indices.length, type: 'SCALAR' }
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBytes.length },
+        { buffer: 0, byteOffset: posBytes.length, byteLength: idxBytes.length }
+      ],
+      buffers: [{ byteLength: merged.length, uri: `data:application/octet-stream;base64,${Buffer.from(merged).toString('base64')}` }]
+    });
+  };
+  const moved = parseGLTF(buildGltf([{ mesh: 0, translation: [0, 2, 0] }]));
+  near('glTF node translation is applied', bounds(moved).center[1], 2, 1e-6);
+  near('translated glTF keeps its volume', volume(moved), 1, 1e-6);
+  const rotated = parseGLTF(buildGltf([{ mesh: 0, rotation: [0, Math.sin(Math.PI / 4), 0, Math.cos(Math.PI / 4)], translation: [1, 0, 0] }]));
+  near('glTF node rotation is applied', bounds(rotated).min[0], 0.5, 1e-6);
+  const nested = parseGLTF(buildGltf([
+    { children: [1], translation: [0, 0, 3] },
+    { mesh: 0, translation: [0, 2, 0] }
+  ], [0]));
+  near('glTF child composes its ancestor transforms', bounds(nested).center[2], 3, 1e-6);
+  near('glTF child composes its ancestor transforms (y)', bounds(nested).center[1], 2, 1e-6);
+}
+
+// #13 — interleaved glTF buffers must honour byteStride.
+{
+  const interleaved = new Float32Array([
+    0, 0, 0, 0, 1, 0,
+    1, 0, 0, 0, 1, 0,
+    1, 0, 1, 0, 1, 0,
+    0, 0, 1, 0, 1, 0
+  ]);
+  const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+  const buffer = new Uint8Array(interleaved.length * 4 + indices.length * 4);
+  buffer.set(new Uint8Array(interleaved.buffer), 0);
+  buffer.set(new Uint8Array(indices.buffer), interleaved.length * 4);
+  const decoded = parseGLTF(JSON.stringify({
+    asset: { version: '2.0' },
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 1, componentType: 5125, count: 6, type: 'SCALAR' }
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 96, byteStride: 24 },
+      { buffer: 0, byteOffset: 96, byteLength: 24 }
+    ],
+    buffers: [{ byteLength: buffer.length, uri: `data:application/octet-stream;base64,${Buffer.from(buffer).toString('base64')}` }]
+  }));
+  check('interleaved glTF decodes two faces', triangleCount(decoded) === 2);
+  check('interleaved glTF reads positions, not the interleaved normals',
+    decoded.vertices.every((v, i) => (i % 3 === 1 ? v === 0 : Number.isFinite(v))));
+  near('interleaved glTF keeps its extent', bounds(decoded).size[0], 1, 1e-6);
+}
 
 check('sniff detects OBJ', sniffFormat('v 0 0 0\nf 1 1 1') === 'obj');
 check('sniff detects PLY', sniffFormat('ply\nformat ascii 1.0') === 'ply');

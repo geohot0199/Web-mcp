@@ -390,25 +390,55 @@ export function extrude(profile, depth = 1, options = {}) {
   return orient(mesh(vertices, indices));
 }
 
-/** Revolve a 2D profile (x = radius, y = height) around the Y axis. */
+/**
+ * Revolve a 2D profile (x = radius, y = height) around the Y axis.
+ *
+ * For a full 2π sweep the surface closes on itself. For a partial sweep the
+ * solid is cut by the two planes through the axis at the bounding angles, so
+ * each open end is capped with the cross-section at that angle: the profile
+ * region itself (a closed profile's interior, or — for an open profile — the
+ * region the profile encloses together with the Y axis).
+ */
 export function revolve(profile, segments = 24, angle = TAU) {
   assertProfile(profile, 'revolve');
   const seg = clampInt(segments, 3, LIMITS.maxSegments, 24);
-  const closed = Math.abs(angle - TAU) < 1e-6;
+  const theta = Math.abs(angle);
+  const closed = Math.abs(theta - TAU) < 1e-6;
+  const sweep = closed ? TAU : theta;
+  const first = profile[0];
+  const last = profile[profile.length - 1];
+  const isClosedLoop = Math.abs(first[0] - last[0]) < 1e-9 && Math.abs(first[1] - last[1]) < 1e-9;
+  // The swept chain is always a closed loop. A closed input profile drops its
+  // duplicated endpoint; an open chain is extended to the Y axis at both ends
+  // — the solid an open chain revolves is the region it encloses together
+  // with the axis, so the axis extension is part of the solid's boundary
+  // (its sweep degenerates onto the axis and welds away).
+  const chain = isClosedLoop ? profile.slice(0, -1) : [...profile, [0, last[1]], [0, first[1]]];
+  const n = chain.length;
   const rings = closed ? seg : seg + 1;
   const vertices = [];
   const indices = [];
   for (let i = 0; i < rings; i += 1) {
-    const theta = (i / seg) * angle;
-    for (const [r, y] of profile) {
-      vertices.push(r * Math.cos(theta), y, r * Math.sin(theta));
+    const t = (i / seg) * sweep;
+    for (const [r, y] of chain) {
+      vertices.push(r * Math.cos(t), y, r * Math.sin(t));
     }
   }
-  const n = profile.length;
   for (let i = 0; i < (closed ? rings : rings - 1); i += 1) {
     const next = (i + 1) % rings;
-    for (let j = 0; j < n - 1; j += 1) {
-      quad(indices, i * n + j, next * n + j, next * n + j + 1, i * n + j + 1);
+    for (let j = 0; j < n; j += 1) {
+      const j2 = (j + 1) % n;
+      quad(indices, i * n + j, next * n + j, next * n + j2, i * n + j2);
+    }
+  }
+  if (!closed && sweep > 0) {
+    // Each open end is capped with the cross-section at that angle — the
+    // chain's interior, which is exactly the region the solid occupies.
+    const tri = triangulate(chain);
+    for (const end of [0, sweep]) {
+      const base = vertices.length / 3;
+      for (const [r, y] of chain) vertices.push(r * Math.cos(end), y, r * Math.sin(end));
+      for (const [a, b, c] of tri.triangles) indices.push(base + a, base + b, base + c);
     }
   }
   return orient(mesh(vertices, indices));

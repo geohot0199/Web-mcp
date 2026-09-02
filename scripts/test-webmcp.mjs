@@ -156,6 +156,71 @@ const brokenWindow = {
 check('a broken native bridge does not block the in-page one',
   registerOrbit(createOrbitServer(), brokenWindow).includes('window.orbit'));
 
+/* ------------------------------ 6b. postMessage origin policy (Qodo #17) */
+
+function messageRoot(origin) {
+  const root = {
+    navigator: {},
+    location: { origin },
+    handlers: {},
+    addEventListener(type, fn) { this.handlers[type] = fn; }
+  };
+  return root;
+}
+
+{
+  const server = createOrbitServer();
+  server.call('create_object', { type: 'cube' });
+  const root = messageRoot('https://studio.example');
+  const evil = { posted: [], postMessage: (payload, target) => evil.posted.push({ payload, target }) };
+  registerOrbit(server, root);
+  const emit = (origin, source, extra = {}) => root.handlers.message({ origin, source, data: { channel: 'orbit', id: 1, ...extra } });
+  const count = () => server.scene.objects.size;
+
+  emit('https://evil.example', evil, { type: 'call', tool: 'clear_scene' });
+  check('untrusted origin is not dispatched', count() === 1);
+  check('untrusted sender receives a coded refusal',
+    evil.posted.length === 1 && evil.posted[0].payload.type === 'rejected' && evil.posted[0].payload.result.code === 'UNTRUSTED_ORIGIN');
+  check('refusals are targeted at the sender origin, never *', evil.posted[0].target === 'https://evil.example');
+
+  server.configure({ trustedOrigins: ['https://agent.example'] });
+  emit('https://agent.example', evil, { type: 'call', tool: 'clear_scene' });
+  check('an explicitly trusted origin is dispatched', count() === 0);
+  check('trusted replies stay targeted at the sender origin', evil.posted.at(-1).target === 'https://agent.example');
+  check('trusted replies carry the result, not a refusal', evil.posted.at(-1).payload.type === 'result');
+
+  // Same-origin senders are always accepted.
+  const sameServer = createOrbitServer();
+  sameServer.call('create_object', { type: 'cube' });
+  const sameRoot = messageRoot('https://studio.example');
+  const sameSource = { posted: [], postMessage: (p, t) => sameSource.posted.push({ p, t }) };
+  registerOrbit(sameServer, sameRoot);
+  sameRoot.handlers.message({ origin: 'https://studio.example', source: sameSource, data: { channel: 'orbit', id: 2, type: 'call', tool: 'clear_scene' } });
+  check('same-origin senders are accepted', sameServer.scene.objects.size === 0);
+  check('same-origin replies target the origin', sameSource.posted.at(-1).t === 'https://studio.example');
+
+  // Self-posted control (source === root) is accepted.
+  const selfServer = createOrbitServer();
+  selfServer.call('create_object', { type: 'cube' });
+  const selfRoot = messageRoot('https://studio.example');
+  registerOrbit(selfServer, selfRoot);
+  selfRoot.handlers.message({ origin: 'null', source: selfRoot, data: { channel: 'orbit', id: 3, type: 'call', tool: 'clear_scene' } });
+  check('self-posted control is accepted', selfServer.scene.objects.size === 0);
+
+  // Sandboxed embeds (opaque "null" origin) need an explicit opt-in.
+  const sbServer = createOrbitServer();
+  sbServer.call('create_object', { type: 'cube' });
+  const sbRoot = messageRoot('https://studio.example');
+  const sbSource = { posted: [], postMessage: (p, t) => sbSource.posted.push({ p, t }) };
+  registerOrbit(sbServer, sbRoot);
+  sbRoot.handlers.message({ origin: 'null', source: sbSource, data: { channel: 'orbit', id: 4, type: 'call', tool: 'clear_scene' } });
+  check('sandboxed (opaque) frames are refused by default', sbServer.scene.objects.size === 1);
+  sbServer.configure({ allowSandboxedFrames: true });
+  sbRoot.handlers.message({ origin: 'null', source: sbSource, data: { channel: 'orbit', id: 5, type: 'call', tool: 'clear_scene' } });
+  check('opting in allows sandboxed frames', sbServer.scene.objects.size === 0);
+  check('opaque-origin replies use the null target', sbSource.posted.at(-1).t === '*');
+}
+
 /* -------------------------------- 7. no human-approval concept survives */
 
 const BANNED = [
