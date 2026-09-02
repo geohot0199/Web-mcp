@@ -12,7 +12,8 @@
 
 import { createScene, createTools, TOOL_NAMES, TOOL_SCHEMAS } from '../js/scene.js';
 import { evaluateExpression, validateGraph, evaluateGraph } from '../js/nodegraph.js';
-import { importMesh } from '../js/io.js';
+import { importMesh, exportOBJ } from '../js/io.js';
+import { box } from '../js/primitives.js';
 import { manifoldReport, volume, triangleCount } from '../js/geom.js';
 
 let passed = 0;
@@ -350,6 +351,136 @@ survives('OBJ with junk lines is tolerated', () => {
   const clean = t.validate_scene({});
   check('a clean scene validates', clean.valid && clean.errors === 0, JSON.stringify(clean.issues));
   check('separated objects report no collisions', t.check_collisions({}).clean);
+}
+
+/* ---------------------- 13. PR-12 Qodo regressions (scene & protocol) */
+
+{
+  // #19 — the very first edit must be undoable back to the empty scene.
+  const { tools } = fresh();
+  check('a fresh scene starts with an initial history entry', tools.get_history().depth === 1 && tools.get_history().index === 0);
+  tools.create_object({ type: 'cube' });
+  tools.undo({});
+  check('the first edit can be undone to the empty scene', tools.inspect_scene({}).object_count === 0);
+  tools.redo({});
+  check('redo restores the first edit', tools.inspect_scene({}).object_count === 1);
+}
+
+{
+  // #1 — graph definitions are journalled like any other state.
+  const { scene, tools } = fresh();
+  const graph = { nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o', type: 'output', inputs: ['a'] }] };
+  tools.define_graph({ id: 'g1', graph });
+  check('define_graph lands in scene state', scene.graphs.has('g1'));
+  tools.undo({});
+  check('undo removes a defined graph', !scene.graphs.has('g1'));
+  tools.redo({});
+  check('redo restores a defined graph', scene.graphs.has('g1'));
+}
+
+{
+  // #4 — no live id can be silently overwritten, on any entity.
+  const { tools } = fresh();
+  tools.create_object({ id: 'dup', type: 'cube' });
+  rejects('reusing a live object id is rejected', () => tools.create_object({ id: 'dup', type: 'sphere' }));
+  check('the original object survives the rejected reuse', tools.inspect_object({ id: 'dup' }).object.type === 'cube');
+  rejects('boolean result_id cannot collide with a live id', () => {
+    tools.create_object({ id: 'b1', type: 'cube' });
+    tools.create_object({ id: 'b2', type: 'cube', position: [0.5, 0, 0] });
+    tools.boolean_operation({ ids: ['b1', 'b2'], operation: 'union', result_id: 'dup' });
+  });
+  rejects('reusing a group id is rejected', () => {
+    tools.create_object({ id: 'ga', type: 'cube' });
+    tools.group_objects({ ids: ['ga'], id: 'grp' });
+    tools.create_object({ id: 'gb', type: 'cube' });
+    tools.group_objects({ ids: ['gb'], id: 'grp' });
+  });
+  rejects('reusing a joint id is rejected', () => {
+    tools.create_object({ id: 'j1', type: 'cube' });
+    tools.create_object({ id: 'j2', type: 'sphere' });
+    tools.add_joint({ id: 'jnt', parent: 'j1', child: 'j2' });
+    tools.add_joint({ id: 'jnt', parent: 'j1', child: 'j2' });
+  });
+  rejects('redefining a graph id is rejected', () => {
+    const graph = { nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o', type: 'output', inputs: ['a'] }] };
+    tools.define_graph({ id: 'gg', graph });
+    tools.define_graph({ id: 'gg', graph });
+  });
+}
+
+{
+  // #2/#3 — the ceilings hold on every insertion path, not just create_object.
+  const { scene, tools } = fresh();
+  scene.limits.max_objects = 1;
+  tools.create_object({ type: 'cube' });
+  const only = [...scene.objects.keys()][0];
+  rejects('duplicate_object cannot exceed the object limit', () => tools.duplicate_object({ id: only }));
+  rejects('import cannot exceed the object limit', () => tools.import_mesh({ data: exportOBJ(box(1, 1, 1)), format: 'obj' }));
+
+  const { scene: s2, tools: t2 } = fresh();
+  s2.limits.max_triangles = 20;
+  t2.create_object({ type: 'cube' }); // 12 triangles
+  rejects('a second cube would exceed the triangle budget', () => t2.create_object({ type: 'cube' }));
+  rejects('a duplicate would exceed the triangle budget', () => t2.duplicate_object({ id: [...s2.objects.keys()][0] }));
+  rejects('import is refused while decoding when it cannot fit the budget',
+    () => t2.import_mesh({ data: exportOBJ(box(1, 1, 1)), format: 'obj' }));
+  const { scene: s3, tools: t3 } = fresh();
+  s3.limits.max_triangles = 11;
+  rejects('import is refused when even an empty scene cannot fit the asset',
+    () => t3.import_mesh({ data: exportOBJ(box(1, 1, 1)), format: 'obj' }));
+}
+
+{
+  // #5 — deletion and operand-consuming booleans remove dependent joints.
+  const { scene, tools } = fresh();
+  tools.create_object({ id: 'pa', type: 'cube' });
+  tools.create_object({ id: 'pb', type: 'sphere' });
+  tools.add_joint({ parent: 'pa', child: 'pb' });
+  check('joint was added', scene.joints.size === 1);
+  tools.delete_object({ id: 'pa' });
+  check('deleting a body removes its joints', scene.joints.size === 0);
+  tools.create_object({ id: 'ca', type: 'cube' });
+  tools.create_object({ id: 'cb', type: 'sphere', params: { radius: 0.6 } });
+  tools.add_joint({ parent: 'ca', child: 'cb' });
+  tools.boolean_operation({ ids: ['ca', 'cb'], operation: 'union' });
+  check('boolean operand cleanup removes their joints', scene.joints.size === 0);
+}
+
+{
+  // #18 — malformed vectors are rejected at the boundary, scene intact.
+  const { tools } = fresh();
+  const id = tools.create_object({ type: 'cube' }).object.id;
+  rejects('string vector elements are rejected', () => tools.move_object({ id, position: ['bad', 0, 0] }));
+  rejects('NaN vector elements are rejected', () => tools.move_object({ id, position: [NaN, 0, 0] }));
+  rejects('Infinity vector elements are rejected', () => tools.move_object({ id, position: [Infinity, 0, 0] }));
+  rejects('short vectors are rejected', () => tools.move_object({ id, position: [0, 0] }));
+  rejects('bad ray origin is rejected', () => tools.select_object({ ray: { origin: 'x', direction: [0, -1, 0] } }));
+  rejects('bad joint axis is rejected', () => {
+    tools.create_object({ id: 'vx', type: 'sphere' });
+    tools.add_joint({ parent: id, child: 'vx', axis: [0, 'up', 0] });
+  });
+  rejects('bad camera position is rejected', () => tools.set_camera({ position: [0, 'sky', 0] }));
+  const inspected = tools.inspect_object({ id }).object;
+  check('rejected mutations leave the transform intact', inspected.position.every((n) => Number.isFinite(n)));
+  check('rejected mutations leave world bounds finite', inspected.world_bounds.max.every((n) => Number.isFinite(n)));
+}
+
+{
+  // #20 — validation and evaluation agree on which terminal is the result.
+  const single = { nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o', type: 'output', inputs: ['a'] }] };
+  check('a single terminal output validates', validateGraph(single).valid);
+  check('two terminal outputs are rejected', !validateGraph({
+    nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o1', type: 'output', inputs: ['a'] }, { id: 'o2', type: 'output', inputs: ['a'] }]
+  }).valid);
+  check('a consumed output is rejected', !validateGraph({
+    nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o', type: 'output', inputs: ['a'] }, { id: 't', type: 'transform', inputs: ['o'] }]
+  }).valid);
+  rejects('evaluating a multi-terminal graph throws', () => evaluateGraph({
+    nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o1', type: 'output', inputs: ['a'] }, { id: 'o2', type: 'output', inputs: ['a'] }]
+  }));
+  rejects('evaluating a consumed-output graph throws', () => evaluateGraph({
+    nodes: [{ id: 'a', type: 'primitive', primitive: 'cube' }, { id: 'o', type: 'output', inputs: ['a'] }, { id: 't', type: 'transform', inputs: ['o'] }]
+  }));
 }
 
 /* --------------------------------------------------------------- report */

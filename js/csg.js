@@ -206,6 +206,24 @@ function evaluate(a, b, operation) {
     if (operation === 'union') {
       return [...shellsA, ...shellsB].reduce((acc, shell) => (acc ? evaluate(acc, shell, 'union') : shell), null);
     }
+    if (operation === 'intersect') {
+      // A ∩ (B₁ ∪ B₂) = (A ∩ B₁) ∪ (A ∩ B₂): distribute over the B shells
+      // and merge the non-empty parts. Folding sequentially (A ∩ B₁) ∩ B₂
+      // would stop at the first disjoint B shell and never reach a later one
+      // that actually overlaps A.
+      const parts = [];
+      for (const shellA of shellsA) {
+        for (const shellB of shellsB) {
+          const part = evaluate(shellA, shellB, 'intersect');
+          if (triangleCount(part)) parts.push(part);
+        }
+      }
+      if (!parts.length) return mesh();
+      return parts.length === 1 ? parts[0] : mergeMeshes(parts);
+    }
+    // Subtract: (A₁ ∪ A₂) ∖ (B₁ ∪ B₂) = (A₁ ∖ B₁ ∖ B₂…) ∪ (A₂ ∖ B₁ ∖ B₂…)
+    // — a correct left fold, and an empty intermediate is genuinely final
+    // (∅ ∖ anything = ∅), so skipping the rest of the chain is safe here.
     const parts = shellsA
       .map((shell) => shellsB.reduce((acc, other) => (acc && triangleCount(acc) ? evaluate(acc, other, operation) : acc), shell))
       .filter((part) => part && triangleCount(part) > 0);

@@ -27,20 +27,32 @@ export const GRAVITY = 9.80665;
  */
 export function massProperties(mesh, material = 'abs', densityOverride = null) {
   const density = densityOverride ?? MATERIAL_DENSITY[material] ?? MATERIAL_DENSITY.abs;
-  const v = Math.abs(volume(mesh));
-  const com = centroid(mesh);
-  const mass = v * density;
 
-  // Inertia via the tetrahedron covariance method.
+  // Every integral below is *signed*: for a mesh whose winding is globally
+  // inward, the signed volume is negative and so are all the inertia
+  // contributions. Volume and mass report the absolute solid, but the
+  // orientation sign must be applied to the inertia terms as well — keeping
+  // the raw signed determinants while abs-ing the volume is what used to
+  // yield a positive mass alongside a physically impossible negative tensor.
+  let signedVol = 0;
+  const comAcc = [0, 0, 0];
   let xx = 0; let yy = 0; let zz = 0; let xy = 0; let xz = 0; let yz = 0;
   for (const [a, b, c] of triangles(mesh)) {
-    const det = dot(a, cross(b, c));
+    const det = dot(a, cross(b, c)); // 6 × signed tetrahedron volume
+    signedVol += det;
+    for (let i = 0; i < 3; i += 1) comAcc[i] += ((a[i] + b[i] + c[i]) / 4) * (det / 6);
     const f = (i) => a[i] + b[i] + c[i];
     const g = (i, j) => a[i] * a[j] + b[i] * b[j] + c[i] * c[j] + f(i) * f(j);
     xx += det * g(0, 0); yy += det * g(1, 1); zz += det * g(2, 2);
     xy += det * g(0, 1); xz += det * g(0, 2); yz += det * g(1, 2);
   }
-  const k = density / 120;
+  const orientation = signedVol < 0 ? -1 : 1;
+  const v = Math.abs(signedVol) / 6;
+  const com = Math.abs(signedVol) > 1e-12
+    ? comAcc.map((value) => value / (signedVol / 6))
+    : bounds(mesh).center;
+  const mass = v * density;
+  const k = (density / 120) * orientation;
   const Ixx = k * (yy + zz); const Iyy = k * (xx + zz); const Izz = k * (xx + yy);
 
   return {
@@ -149,8 +161,61 @@ function polygonArea(polygon) {
 }
 
 /**
- * Separating-axis collision test between two convex-ish bodies, with an
- * AABB broad phase and vertex-containment narrow phase for concave shapes.
+ * Möller–Thomson segment/triangle intersection (with the coplanar edge
+ * cases), the standard triangle–triangle primitive.
+ */
+function segmentTriangleIntersect(e0, e1, t1, t2, t3, eps = 1e-12) {
+  const D1 = cross(sub(t2, t1), sub(t3, t1));
+  const A = dot(sub(e1, e0), D1);
+  if (A > -eps && A < eps) return false;
+  const f = 1 / A;
+  const P1 = sub(e0, t1);
+  const u = f * dot(cross(P1, sub(t2, t1)), sub(e1, e0));
+  if (u < -eps || u > 1 + eps) return false;
+  const P2 = sub(t1, e0);
+  const N = -dot(P2, D1);
+  const invW = -f * N;
+  let q1;
+  let q2;
+  if (N >= -eps && N <= eps) {
+    q1 = u - 1;
+    q2 = 0;
+  } else if (invW >= -eps && invW <= eps) {
+    q1 = 1;
+    q2 = N;
+  } else {
+    const v = f * dot(cross(P2, P1), sub(e1, e0));
+    if (v < -eps || u + v > 1 + eps) return false;
+    const v1 = 1 - v;
+    q1 = v1 * u + v1 * v;
+    q2 = v1 * N;
+  }
+  const B = dot(sub(t1, e0), D1);
+  const v = f * B;
+  const w1 = 1 - v;
+  const v1 = q1 + w1 * q2;
+  const w2 = -v1;
+  const v2 = q2 + w1 * w2;
+  const w3 = -v2;
+  return f * (v1 + w1 * w2 + w3) >= -eps;
+}
+
+function trianglesIntersect(a, b, c, d, e, f) {
+  return segmentTriangleIntersect(a, b, d, e, f)
+    || segmentTriangleIntersect(b, c, d, e, f)
+    || segmentTriangleIntersect(c, a, d, e, f)
+    || segmentTriangleIntersect(d, e, a, b, c)
+    || segmentTriangleIntersect(e, f, a, b, c)
+    || segmentTriangleIntersect(f, d, a, b, c);
+}
+
+/**
+ * Collision between two meshes: AABB broad phase, then a *symmetric* narrow
+ * phase. Vertex containment is tested in both directions (catches partial
+ * overlap and one body fully enclosed by the other), and — where neither
+ * body's sampled vertices are inside the other — a bounded triangle–triangle
+ * pass catches surface-crossing intersections that vertex sampling alone
+ * can miss.
  */
 export function collide(meshA, meshB) {
   const ba = bounds(meshA);
@@ -160,25 +225,53 @@ export function collide(meshA, meshB) {
   }
   let deepest = 0;
   let contacts = 0;
-  const step = Math.max(1, Math.floor(vertexCount(meshA) / 64));
-  for (let i = 0; i < vertexCount(meshA); i += step) {
-    const v = getVertex(meshA, i);
-    if (containsPoint(meshB, v)) {
-      contacts += 1;
-      const depth = Math.min(
-        ...[0, 1, 2].flatMap((a) => [Math.abs(v[a] - bb.min[a]), Math.abs(bb.max[a] - v[a])])
-      );
-      deepest = Math.max(deepest, depth);
+  const sample = (mesh, inside, box) => {
+    const step = Math.max(1, Math.floor(vertexCount(mesh) / 64));
+    for (let i = 0; i < vertexCount(mesh); i += step) {
+      const v = getVertex(mesh, i);
+      if (containsPoint(inside, v)) {
+        contacts += 1;
+        const depth = Math.min(
+          ...[0, 1, 2].flatMap((a) => [Math.abs(v[a] - box.min[a]), Math.abs(box.max[a] - v[a])])
+        );
+        deepest = Math.max(deepest, depth);
+      }
+    }
+  };
+  sample(meshA, meshB, bb);
+  sample(meshB, meshA, ba);
+
+  // The surface-crossing pass is quadratic in triangle count, so it runs
+  // only when vertex sampling found nothing and the pair is small enough to
+  // test exhaustively; larger pairs stay bounded and rely on the symmetric
+  // containment test.
+  let surface_intersections = 0;
+  const countA = triangleCount(meshA);
+  const countB = triangleCount(meshB);
+  if (contacts === 0 && countA <= 8192 && countB <= 8192 && countA * countB <= 4_000_000) {
+    const trisA = [...triangles(meshA)];
+    const trisB = [...triangles(meshB)];
+    outer:
+    for (const triA of trisA) {
+      for (const triB of trisB) {
+        if (trianglesIntersect(...triA, ...triB)) {
+          surface_intersections = 1;
+          break outer;
+        }
+      }
     }
   }
+
+  const colliding = contacts > 0 || surface_intersections > 0;
   const overlapBox = [0, 1, 2].map((a) => Math.min(ba.max[a], bb.max[a]) - Math.max(ba.min[a], bb.min[a]));
   return {
-    colliding: contacts > 0,
-    phase: contacts > 0 ? 'narrow' : 'broad-only',
+    colliding,
+    phase: colliding ? 'narrow' : 'broad-only',
     contact_samples: contacts,
+    surface_intersections,
     penetration: Number(deepest.toFixed(6)),
     overlap_volume_estimate: Number((overlapBox[0] * overlapBox[1] * overlapBox[2]).toFixed(6)),
-    touching: contacts === 0
+    touching: !colliding
   };
 }
 

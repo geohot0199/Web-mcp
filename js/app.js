@@ -30,21 +30,22 @@ let controls = null;
 let webglAvailable = true;
 
 const view = new THREE.Scene();
-view.background = new THREE.Color('#0b0b0c');
+view.background = new THREE.Color('#0d0d0d');
 
 const group = new THREE.Group();
 view.add(group);
 
-const grid = new THREE.GridHelper(20, 20, 0x2a2a2e, 0x18181b);
+const grid = new THREE.GridHelper(20, 20, 0x2e2e2e, 0x1b1b1b);
 grid.material.transparent = true;
 grid.material.opacity = 0.55;
 view.add(grid);
 
-view.add(new THREE.HemisphereLight(0xffffff, 0x101014, 0.55));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x101014, 0.55);
+view.add(hemi);
 const key = new THREE.DirectionalLight(0xffffff, 2.1);
 key.position.set(5, 8, 6);
 view.add(key);
-const fill = new THREE.DirectionalLight(0xaab4ff, 0.5);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
 fill.position.set(-6, 3, -4);
 view.add(fill);
 const rim = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -144,7 +145,7 @@ function rebuildViewport() {
     if (kernel.selection.has(object.id)) {
       const outline = new THREE.LineSegments(
         new THREE.EdgesGeometry(geometry, 25),
-        new THREE.LineBasicMaterial({ color: 0x7c5cff, transparent: true, opacity: 0.9 })
+        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
       );
       outline.userData.id = object.id;
       group.add(outline);
@@ -152,17 +153,68 @@ function rebuildViewport() {
   }
 }
 
+function makeCamera(projection) {
+  return projection === 'orthographic'
+    ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 1000)
+    : new THREE.PerspectiveCamera(45, 1, 0.05, 1000);
+}
+
 function syncCamera() {
   if (!camera || !controls) return;
   const c = kernel.camera;
+  const wantOrtho = c.projection === 'orthographic';
+  // Swap the projection kind while preserving the current placement.
+  if (wantOrtho !== Boolean(camera.isOrthographicCamera)) {
+    const next = makeCamera(c.projection);
+    next.position.set(...c.position);
+    camera = next;
+    controls.object = camera;
+  }
   camera.position.set(...c.position);
   controls.target.set(...c.target);
-  camera.fov = c.fov;
+  camera.near = c.near ?? camera.near;
+  camera.far = c.far ?? camera.far;
+  if (Array.isArray(c.up)) camera.up.set(...c.up);
+  if (camera.isOrthographicCamera) {
+    // The kernel's fov doubles as the frustum size at the current distance,
+    // so framing behaves the same way in both projections.
+    const distance = Math.max(0.1, camera.position.distanceTo(controls.target));
+    const halfHeight = Math.tan(((c.fov || 45) / 2) * (Math.PI / 180)) * distance;
+    camera.left = -halfHeight * camera.aspect;
+    camera.right = halfHeight * camera.aspect;
+    camera.top = halfHeight;
+    camera.bottom = -halfHeight;
+  } else {
+    camera.fov = c.fov;
+  }
   camera.updateProjectionMatrix();
   controls.update();
 }
 
 let lastCameraSignature = '';
+
+/**
+ * The environment tool is not a no-op: background, exposure, ambient level,
+ * shadows and the post chain are read here and applied to the renderer every
+ * time the kernel state changes.
+ */
+function syncEnvironment() {
+  const env = kernel.environment;
+  if (view) {
+    try { view.background = new THREE.Color(env.background || '#0d0d0d'); } catch { /* bad colour string */ }
+  }
+  if (renderer) {
+    renderer.toneMappingExposure = env.exposure ?? 1;
+    const tonemap = env.post?.tonemap || 'aces';
+    renderer.toneMapping = tonemap === 'none' ? THREE.NoToneMapping
+      : tonemap === 'linear' ? THREE.LinearToneMapping
+        : THREE.ACESFilmicToneMapping;
+    renderer.shadowMap.enabled = Boolean(env.shadows);
+  }
+  if (hemi) hemi.intensity = (env.ambient_intensity ?? 0.35) * 1.6;
+  const vignette = document.querySelector('.viewport-vignette');
+  if (vignette) vignette.style.opacity = String(Math.min(1, Math.max(0, env.post?.vignette ?? 0.15)));
+}
 
 function tick() {
   requestAnimationFrame(tick);
@@ -172,13 +224,19 @@ function tick() {
   // freeze the entire UI on machines without hardware acceleration.
   if (dirty) {
     dirty = false;
-    if (webglAvailable) rebuildViewport();
+    if (webglAvailable) {
+      rebuildViewport();
+      syncEnvironment();
+    }
     renderUI();
   }
 
   if (!renderer || !camera) return;
 
-  const signature = JSON.stringify([kernel.camera.position, kernel.camera.target, kernel.camera.fov]);
+  const signature = JSON.stringify([
+    kernel.camera.position, kernel.camera.target, kernel.camera.up,
+    kernel.camera.fov, kernel.camera.near, kernel.camera.far, kernel.camera.projection
+  ]);
   if (signature !== lastCameraSignature) {
     lastCameraSignature = signature;
     syncCamera();
@@ -347,7 +405,7 @@ el('console-input').addEventListener('keydown', (event) => {
 
 const QUICK = [
   ['cube', 'create_object {"type":"cube","material":"metal"}'],
-  ['sphere', 'create_object {"type":"sphere","material":"plastic","color":"#7c5cff"}'],
+  ['sphere', 'create_object {"type":"sphere","material":"plastic","color":"#e5e5e5"}'],
   ['torus', 'create_object {"type":"torus","material":"metal"}'],
   ['union', 'boolean_operation {"operation":"union"}'],
   ['subtract', 'boolean_operation {"operation":"subtract"}'],
@@ -391,9 +449,9 @@ el('status-message').innerHTML = 'Orbit kernel ready — <code>window.orbit.call
 // place the shell touches the kernel, and it goes through the tool surface like
 // any agent would.
 server.batch([
-  { tool: 'create_object', args: { type: 'rounded_box', name: 'Chassis', position: [0, 0.5, 0], params: { width: 2.4, height: 0.5, depth: 1.6, radius: 0.14 }, material: 'metal', color: '#b9bcc4' } },
-  { tool: 'create_object', args: { type: 'cylinder', name: 'Hub', position: [0, 1.05, 0], params: { radius: 0.42, height: 0.6, segments: 48 }, material: 'metal', color: '#7c5cff' } },
-  { tool: 'create_object', args: { type: 'torus', name: 'Ring', position: [0, 1.05, 0], rotation: [Math.PI / 2, 0, 0], params: { radius: 1.05, tube: 0.07, radial_segments: 64, tubular_segments: 20 }, material: 'metal', color: '#8d9199' } },
+  { tool: 'create_object', args: { type: 'rounded_box', name: 'Chassis', position: [0, 0.5, 0], params: { width: 2.4, height: 0.5, depth: 1.6, radius: 0.14 }, material: 'metal', color: '#d6d6d6' } },
+  { tool: 'create_object', args: { type: 'cylinder', name: 'Hub', position: [0, 1.05, 0], params: { radius: 0.42, height: 0.6, segments: 48 }, material: 'metal', color: '#ffffff' } },
+  { tool: 'create_object', args: { type: 'torus', name: 'Ring', position: [0, 1.05, 0], rotation: [Math.PI / 2, 0, 0], params: { radius: 1.05, tube: 0.07, radial_segments: 64, tubular_segments: 20 }, material: 'metal', color: '#9a9a9a' } },
   { tool: 'set_camera', args: { frame_all: true } }
 ]);
 
@@ -407,7 +465,7 @@ tick();
 // would sit in the temporal dead zone if the timer ever fired first.
 let lastSignature = '';
 setInterval(() => {
-  const signature = `${kernel.objects.size}:${kernel.historyIndex}:${[...kernel.selection].join(',')}`;
+  const signature = `${kernel.objects.size}:${kernel.historyIndex}:${[...kernel.selection].join(',')}|${JSON.stringify(kernel.environment)}`;
   if (signature !== lastSignature) {
     lastSignature = signature;
     markDirty();

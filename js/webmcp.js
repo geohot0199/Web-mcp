@@ -22,6 +22,14 @@ export function createOrbitServer(options = {}) {
   const tools = createTools(scene);
   const listeners = new Set();
   const log = [];
+  // Cross-frame trust policy for the postMessage bridge. Same-origin senders
+  // are always accepted; anything else must be explicitly listed. Sandboxed
+  // embeds (opaque "null" origins) are only accepted when opted into, because
+  // an attacker-controlled parent cannot be distinguished from a real one.
+  const policy = {
+    trustedOrigins: new Set((options.trustedOrigins || []).map(String)),
+    allowSandboxedFrames: Boolean(options.allowSandboxedFrames)
+  };
 
   const emit = (event) => {
     log.push(event);
@@ -73,6 +81,11 @@ export function createOrbitServer(options = {}) {
     if (/live ids:/.test(message)) return 'Use one of the live ids listed in the error, or call inspect_scene.';
     if (/at least two/.test(message)) return 'Boolean operations need two or more operand ids.';
     if (/empty solid/.test(message)) return 'The operands do not overlap — move them together or use union.';
+    if (/already exists/.test(message)) return 'Ids are unique — call inspect_scene to see live ids, then choose a new one.';
+    if (/object limit/.test(message)) return 'The scene is at its object ceiling — delete unneeded objects or merge them with a boolean.';
+    if (/triangle budget/.test(message)) return 'The scene is at its triangle ceiling — decimate, coarsen primitives or delete heavy objects.';
+    if (/three finite numbers/.test(message)) return 'Vector arguments must be arrays of three finite numbers, e.g. [0, 1, 0].';
+    if (/finite number/.test(message)) return 'Numeric arguments must be finite numbers — no strings, null or Infinity.';
     if (/profile/.test(message)) return 'A profile is an array of at least three finite [x, y] points.';
     return 'Call list_capabilities or inspect_scene to re-ground before retrying.';
   }
@@ -94,6 +107,13 @@ export function createOrbitServer(options = {}) {
     manifest,
     listTools: () => TOOL_SCHEMAS,
     toolNames: () => TOOL_NAMES,
+    policy,
+    /** Tighten or widen the postMessage trust policy at runtime. */
+    configure(next = {}) {
+      if (Array.isArray(next.trustedOrigins)) policy.trustedOrigins = new Set(next.trustedOrigins.map(String));
+      if (typeof next.allowSandboxedFrames === 'boolean') policy.allowSandboxedFrames = next.allowSandboxedFrames;
+      return policy;
+    },
     /** Run a batch and stop at the first failure, reporting where it stopped. */
     batch(calls = []) {
       const results = [];
@@ -148,22 +168,56 @@ export function registerOrbit(server, root = globalThis) {
     toolNames: server.toolNames,
     subscribe: server.subscribe,
     getLog: server.getLog,
+    configure: server.configure,
     scene: server.scene,
     tools: server.tools
   });
   registrations.push('window.orbit');
 
   // 3. postMessage, for agents driving the studio from a parent frame.
+  //    The payload's `channel` field is attacker-controlled and proves
+  //    nothing, so the *sender* is validated against the trust policy before
+  //    any tool executes, and replies are targeted at the validated origin
+  //    (never '*') because they carry scene state.
   if (typeof root.addEventListener === 'function') {
+    const selfOrigin = root.location?.origin || null;
+    const isTrusted = (event) => {
+      if (!event) return false;
+      if (event.source && event.source === root) return true; // self-posted
+      const origin = event.origin;
+      if (origin && origin !== 'null') {
+        if (selfOrigin && origin === selfOrigin) return true;
+        if (server.policy.trustedOrigins.has(origin)) return true;
+        if (server.policy.trustedOrigins.has('*')) return true;
+      }
+      if (origin === 'null') return server.policy.allowSandboxedFrames;
+      return false;
+    };
+    const targetFor = (event) => (event.origin && event.origin !== 'null' ? event.origin : '*');
+    const reply = (event, payload) => {
+      const source = event.source;
+      if (!source || typeof source.postMessage !== 'function') return;
+      try { source.postMessage({ channel: 'orbit', id: event.data?.id, ...payload }, targetFor(event)); } catch { /* closed frame */ }
+    };
     root.addEventListener('message', (event) => {
       const data = event?.data;
       if (!data || data.channel !== 'orbit') return;
-      const reply = (payload) => {
-        try { event.source?.postMessage({ channel: 'orbit', id: data.id, ...payload }, '*'); } catch { /* closed frame */ }
-      };
-      if (data.type === 'manifest') reply({ type: 'manifest', manifest: server.manifest() });
-      else if (data.type === 'call') reply({ type: 'result', result: server.call(data.tool, data.args) });
-      else if (data.type === 'batch') reply({ type: 'result', result: server.batch(data.calls) });
+      if (!isTrusted(event)) {
+        // No dispatch, and no scene state: just a coded refusal so a
+        // well-behaved embedder can learn it needs to be whitelisted.
+        reply(event, {
+          type: 'rejected',
+          result: {
+            ok: false,
+            error: 'Sender origin is not trusted by this Orbit studio — register it with orbit.configure({ trustedOrigins: ["<origin>"] }).',
+            code: 'UNTRUSTED_ORIGIN'
+          }
+        });
+        return;
+      }
+      if (data.type === 'manifest') reply(event, { type: 'manifest', manifest: server.manifest() });
+      else if (data.type === 'call') reply(event, { type: 'result', result: server.call(data.tool, data.args) });
+      else if (data.type === 'batch') reply(event, { type: 'result', result: server.batch(data.calls) });
     });
     registrations.push('postMessage');
   }

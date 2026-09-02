@@ -39,7 +39,7 @@ let counter = 0;
 const nextId = (prefix) => `${prefix}_${(counter += 1)}`;
 
 export function createScene(options = {}) {
-  return {
+  const scene = {
     objects: new Map(),
     groups: new Map(),
     joints: new Map(),
@@ -58,8 +58,15 @@ export function createScene(options = {}) {
     history: [],
     historyIndex: -1,
     journal: [],
+    triangles: 0,
     limits: { max_objects: 5000, max_triangles: 4_000_000 }
   };
+  // Seed the journal with the empty scene so the very first mutation can be
+  // undone back to a truly empty world (total undo, not "everything except
+  // the first edit").
+  scene.history = [{ label: 'initial scene', detail: { kind: 'bootstrap' }, state: snapshot(scene), at: 0 }];
+  scene.historyIndex = 0;
+  return scene;
 }
 
 /* --------------------------------------------------------------- history */
@@ -76,9 +83,11 @@ function snapshot(scene) {
     }]),
     groups: [...scene.groups.entries()].map(([id, group]) => [id, { ...group, children: [...group.children] }]),
     joints: [...scene.joints.entries()].map(([id, joint]) => [id, { ...joint }]),
+    graphs: [...scene.graphs.entries()].map(([id, graph]) => [id, JSON.parse(JSON.stringify(graph))]),
     selection: [...scene.selection],
     camera: { ...scene.camera },
-    environment: JSON.parse(JSON.stringify(scene.environment))
+    environment: JSON.parse(JSON.stringify(scene.environment)),
+    triangles: scene.triangles
   };
 }
 
@@ -92,9 +101,11 @@ function restore(scene, state) {
   }]));
   scene.groups = new Map(state.groups.map(([id, group]) => [id, { ...group, children: [...group.children] }]));
   scene.joints = new Map(state.joints.map(([id, joint]) => [id, { ...joint }]));
+  scene.graphs = new Map((state.graphs || []).map(([id, graph]) => [id, JSON.parse(JSON.stringify(graph))]));
   scene.selection = new Set(state.selection);
   scene.camera = { ...state.camera };
   scene.environment = JSON.parse(JSON.stringify(state.environment));
+  scene.triangles = state.triangles || 0;
 }
 
 export function commit(scene, label, detail = {}) {
@@ -130,6 +141,7 @@ export function redo(scene, steps = 1) {
 
 function makeObject(spec = {}) {
   const type = spec.type || 'cube';
+  const scale = typeof spec.scale === 'number' ? asNumber(spec.scale, 'scale') : undefined;
   return {
     id: spec.id || nextId(type),
     name: spec.name || `${type} ${counter}`,
@@ -137,9 +149,12 @@ function makeObject(spec = {}) {
     type,
     params: { ...(spec.params || {}) },
     transform: {
-      position: [...(spec.position || [0, 0, 0])],
-      rotation: [...(spec.rotation || [0, 0, 0])],
-      scale: typeof spec.scale === 'number' ? [spec.scale, spec.scale, spec.scale] : [...(spec.scale || [1, 1, 1])]
+      // Validated at the boundary: every creation path (create, duplicate,
+      // freeform, graph instantiation, import) passes through here, so a
+      // malformed transform can never reach the object map.
+      position: spec.position !== undefined ? asVec3(spec.position, 'position') : [0, 0, 0],
+      rotation: spec.rotation !== undefined ? asVec3(spec.rotation, 'rotation') : [0, 0, 0],
+      scale: scale !== undefined ? [scale, scale, scale] : (spec.scale !== undefined ? asVec3(spec.scale, 'scale') : [1, 1, 1])
     },
     material: spec.material || 'plastic',
     color: spec.color || '#c8c8c8',
@@ -173,6 +188,41 @@ export function worldMesh(object) {
 }
 
 const invalidate = (object) => { object._meshCache = null; };
+
+/** Local-space triangle count of an object's current mesh (cached). */
+function trianglesOf(object) {
+  try { return triangleCount(objectMesh(object)); } catch { return 0; }
+}
+
+/* -------------------------------------------------- argument validation */
+
+/**
+ * Every vector argument is validated at the tool boundary: exactly three
+ * finite numbers. The postMessage bridge does not run JSON schemas, so a
+ * malformed cross-frame request must be rejected here, never committed into
+ * a transform where it would poison world bounds, physics and exports.
+ */
+function asVec3(value, name) {
+  if (!Array.isArray(value) || value.length !== 3 || value.some((n) => typeof n !== 'number' || !Number.isFinite(n))) {
+    throw new Error(`${name} must be an array of three finite numbers, e.g. [0, 1, 0]`);
+  }
+  return [...value];
+}
+
+function asVec2(value, name) {
+  if (!Array.isArray(value) || value.length < 2 || value.some((n) => typeof n !== 'number' || !Number.isFinite(n))) {
+    throw new Error(`${name} must be an array of finite numbers`);
+  }
+  return [...value];
+}
+
+function asNumber(value, name, fallback) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${name} must be a finite number`);
+  }
+  return value;
+}
 
 function requireObject(scene, id) {
   if (id === undefined || id === null || id === '') {
@@ -229,6 +279,56 @@ function describe(scene, object, deep = false) {
   };
 }
 
+/* -------------------------------------------- shared mutation helpers */
+
+/**
+ * The only door into `scene.objects`. Every creation path — create,
+ * duplicate, freeform, graph instantiation, import, boolean result —
+ * funnels through here so the advertised ceilings hold no matter which tool
+ * an agent reaches for:
+ *   · object count vs `limits.max_objects`
+ *   · aggregate triangle count vs `limits.max_triangles`
+ *   · id uniqueness (a live id can never be silently overwritten)
+ * The scene's running triangle counter is updated here and on every removal,
+ * so repeated insertions stay O(1) instead of re-scanning the whole scene.
+ */
+function insertObjects(scene, objects) {
+  if (!objects.length) return;
+  const incomingTris = objects.reduce((sum, object) => sum + trianglesOf(object), 0);
+  for (const object of objects) {
+    if (scene.objects.has(object.id)) {
+      throw new Error(`Object id "${object.id}" already exists — ids must be unique; pick a new id or delete the existing object first`);
+    }
+  }
+  if (scene.objects.size + objects.length > scene.limits.max_objects) {
+    throw new Error(`Scene object limit reached (${scene.limits.max_objects}) — delete objects or use a boolean to merge them`);
+  }
+  if (scene.triangles + incomingTris > scene.limits.max_triangles) {
+    throw new Error(`Scene triangle budget exceeded (${scene.triangles.toLocaleString()} live + ${incomingTris.toLocaleString()} incoming > ${scene.limits.max_triangles.toLocaleString()})`);
+  }
+  for (const object of objects) scene.objects.set(object.id, object);
+  scene.triangles += incomingTris;
+}
+
+/**
+ * Remove an object and everything that referenced it: selection, group
+ * membership and any joint whose parent or child is going away. Leaving
+ * dangling joints behind would make mobility reports count constraints on
+ * nonexistent bodies.
+ */
+function purgeObject(scene, id) {
+  const object = scene.objects.get(id);
+  if (object) scene.triangles -= trianglesOf(object);
+  scene.objects.delete(id);
+  scene.selection.delete(id);
+  for (const group of scene.groups.values()) {
+    group.children = group.children.filter((child) => child !== id);
+  }
+  for (const [jointId, joint] of [...scene.joints]) {
+    if (joint.parent === id || joint.child === id) scene.joints.delete(jointId);
+  }
+}
+
 /* ----------------------------------------------------------------- tools */
 
 export function createTools(scene) {
@@ -242,10 +342,9 @@ export function createTools(scene) {
       if (!PRIMITIVE_TYPES.includes(type) && type !== 'rounded_box' && type !== 'mesh') {
         throw new Error(`Unknown type "${type}". Available: ${[...PRIMITIVE_TYPES, 'rounded_box'].join(', ')}`);
       }
-      if (scene.objects.size >= scene.limits.max_objects) throw new Error('Scene object limit reached');
       const object = makeObject(args);
       objectMesh(object);
-      scene.objects.set(object.id, object);
+      insertObjects(scene, [object]);
       if (args.select !== false) scene.selection = new Set([object.id]);
       commit(scene, `create ${object.type}`, { id: object.id });
       return ok({ object: describe(scene, object) });
@@ -259,11 +358,7 @@ export function createTools(scene) {
       const removed = [];
       for (const id of ids) {
         requireObject(scene, id);
-        scene.objects.delete(id);
-        scene.selection.delete(id);
-        for (const group of scene.groups.values()) {
-          group.children = group.children.filter((child) => child !== id);
-        }
+        purgeObject(scene, id);
         removed.push(id);
       }
       commit(scene, `delete ${removed.length} object(s)`, { ids: removed });
@@ -277,7 +372,7 @@ export function createTools(scene) {
       const copies = [];
       for (const id of ids) {
         const source = requireObject(scene, id);
-        const clone = makeObject({
+        copies.push(makeObject({
           ...source,
           id: nextId(source.type),
           name: `${source.name} copy`,
@@ -287,23 +382,24 @@ export function createTools(scene) {
           modifiers: source.modifiers,
           tags: source.tags,
           baseMesh: source.baseMesh
-        });
-        scene.objects.set(clone.id, clone);
-        copies.push(clone.id);
+        }));
       }
-      scene.selection = new Set(copies);
-      commit(scene, `duplicate ${copies.length}`, { ids: copies });
-      return ok({ created: copies });
+      insertObjects(scene, copies);
+      scene.selection = new Set(copies.map((c) => c.id));
+      commit(scene, `duplicate ${copies.length}`, { ids: copies.map((c) => c.id) });
+      return ok({ created: copies.map((c) => c.id) });
     },
 
     move_object(args = {}) {
       const ids = args.ids || (args.id ? [args.id] : [...scene.selection]);
       if (!ids.length) throw new Error('move_object: no ids and empty selection');
+      const position = args.position !== undefined ? asVec3(args.position, 'position') : undefined;
+      const delta = args.delta !== undefined ? asVec3(args.delta, 'delta') : undefined;
       const results = [];
       for (const id of ids) {
         const object = requireObject(scene, id);
-        if (args.position) object.transform.position = [...args.position];
-        else if (args.delta) object.transform.position = object.transform.position.map((n, i) => n + (args.delta[i] || 0));
+        if (position) object.transform.position = [...position];
+        else if (delta) object.transform.position = object.transform.position.map((n, i) => n + (delta[i] || 0));
         if (args.drop_to_ground) {
           const b = bounds(worldMesh(object));
           object.transform.position[1] -= b.min[1];
@@ -318,14 +414,17 @@ export function createTools(scene) {
       const ids = args.ids || (args.id ? [args.id] : [...scene.selection]);
       if (!ids.length) throw new Error('rotate_object: no ids and empty selection');
       const toRad = (v) => (args.degrees === false ? v : (v * Math.PI) / 180);
+      const rotation = args.rotation !== undefined ? asVec3(args.rotation, 'rotation') : undefined;
+      const delta = args.delta !== undefined ? asVec3(args.delta, 'delta') : undefined;
+      const angle = args.angle !== undefined ? asNumber(args.angle, 'angle') : undefined;
       const results = [];
       for (const id of ids) {
         const object = requireObject(scene, id);
-        if (args.rotation) object.transform.rotation = args.rotation.map(toRad);
-        else if (args.delta) object.transform.rotation = object.transform.rotation.map((n, i) => n + toRad(args.delta[i] || 0));
-        else if (args.axis !== undefined && args.angle !== undefined) {
+        if (rotation) object.transform.rotation = rotation.map(toRad);
+        else if (delta) object.transform.rotation = object.transform.rotation.map((n, i) => n + toRad(delta[i] || 0));
+        else if (args.axis !== undefined && angle !== undefined) {
           const index = { x: 0, y: 1, z: 2 }[args.axis] ?? 1;
-          object.transform.rotation[index] += toRad(args.angle);
+          object.transform.rotation[index] += toRad(angle);
         }
         results.push({ id, rotation_deg: object.transform.rotation.map((n) => Number(((n * 180) / Math.PI).toFixed(3))) });
       }
@@ -336,18 +435,23 @@ export function createTools(scene) {
     scale_object(args = {}) {
       const ids = args.ids || (args.id ? [args.id] : [...scene.selection]);
       if (!ids.length) throw new Error('scale_object: no ids and empty selection');
+      const factor = args.factor !== undefined ? asNumber(args.factor, 'factor') : undefined;
+      const scale = args.scale !== undefined
+        ? (typeof args.scale === 'number'
+            ? [asNumber(args.scale, 'scale'), asNumber(args.scale, 'scale'), asNumber(args.scale, 'scale')]
+            : asVec3(args.scale, 'scale'))
+        : undefined;
+      const amount = args.amount !== undefined ? asNumber(args.amount, 'amount') : undefined;
       const results = [];
       for (const id of ids) {
         const object = requireObject(scene, id);
-        if (typeof args.factor === 'number') {
-          object.transform.scale = object.transform.scale.map((n) => n * args.factor);
-        } else if (args.scale) {
-          object.transform.scale = typeof args.scale === 'number'
-            ? [args.scale, args.scale, args.scale]
-            : [...args.scale];
-        } else if (args.axis && args.amount !== undefined) {
+        if (factor !== undefined) {
+          object.transform.scale = object.transform.scale.map((n) => n * factor);
+        } else if (scale) {
+          object.transform.scale = [...scale];
+        } else if (args.axis && amount !== undefined) {
           const index = { x: 0, y: 1, z: 2 }[args.axis] ?? 1;
-          object.transform.scale[index] *= args.amount;
+          object.transform.scale[index] *= amount;
         }
         object.transform.scale = object.transform.scale.map((n) => (Math.abs(n) < 1e-4 ? Math.sign(n || 1) * 1e-4 : n));
         results.push({ id, scale: object.transform.scale.map((n) => Number(n.toFixed(5))) });
@@ -362,14 +466,17 @@ export function createTools(scene) {
       if (args.material && !MATERIALS.includes(args.material)) {
         throw new Error(`Unknown material "${args.material}". Available: ${MATERIALS.join(', ')}`);
       }
+      const roughness = args.roughness !== undefined ? Math.min(1, Math.max(0, asNumber(args.roughness, 'roughness'))) : undefined;
+      const metalness = args.metalness !== undefined ? Math.min(1, Math.max(0, asNumber(args.metalness, 'metalness'))) : undefined;
+      const opacity = args.opacity !== undefined ? Math.min(1, Math.max(0, asNumber(args.opacity, 'opacity'))) : undefined;
       const results = [];
       for (const id of ids) {
         const object = requireObject(scene, id);
         if (args.material) object.material = args.material;
         if (args.color) object.color = args.color;
-        if (args.roughness !== undefined) object.roughness = Math.min(1, Math.max(0, args.roughness));
-        if (args.metalness !== undefined) object.metalness = Math.min(1, Math.max(0, args.metalness));
-        if (args.opacity !== undefined) object.opacity = Math.min(1, Math.max(0, args.opacity));
+        if (roughness !== undefined) object.roughness = roughness;
+        if (metalness !== undefined) object.metalness = metalness;
+        if (opacity !== undefined) object.opacity = opacity;
         results.push(describe(scene, object));
       }
       commit(scene, `material ${ids.length}`, { ids });
@@ -378,9 +485,15 @@ export function createTools(scene) {
 
     set_camera(args = {}) {
       const camera = scene.camera;
-      if (args.position) camera.position = [...args.position];
-      if (args.target) camera.target = [...args.target];
-      if (args.fov !== undefined) camera.fov = Math.min(160, Math.max(5, args.fov));
+      if (args.position) camera.position = asVec3(args.position, 'position');
+      if (args.target) camera.target = asVec3(args.target, 'target');
+      if (args.up) camera.up = asVec3(args.up, 'up');
+      if (args.fov !== undefined) camera.fov = Math.min(160, Math.max(5, asNumber(args.fov, 'fov')));
+      if (args.near !== undefined) camera.near = Math.max(0.001, asNumber(args.near, 'near'));
+      if (args.far !== undefined) camera.far = Math.max(camera.near + 0.001, asNumber(args.far, 'far'));
+      if (args.projection && !['perspective', 'orthographic'].includes(args.projection)) {
+        throw new Error(`Unknown projection "${args.projection}" — use "perspective" or "orthographic"`);
+      }
       if (args.projection) camera.projection = args.projection;
       if (args.frame_all || args.frame) {
         const meshes = [...scene.objects.values()].filter((o) => o.visible).map(worldMesh);
@@ -389,7 +502,7 @@ export function createTools(scene) {
           const radius = Math.max(...b.size) || 1;
           const distance = (radius / 2) / Math.tan(((camera.fov / 2) * Math.PI) / 180) * 1.8;
           camera.target = b.center;
-          const dir = normalize(args.direction || [1, 0.7, 1]);
+          const dir = normalize(args.direction ? asVec3(args.direction, 'direction') : [1, 0.7, 1]);
           camera.position = b.center.map((n, i) => n + dir[i] * distance);
         }
       }
@@ -416,6 +529,9 @@ export function createTools(scene) {
         children: [...ids],
         tags: args.tags || []
       };
+      if (scene.groups.has(group.id)) {
+        throw new Error(`Group id "${group.id}" already exists — pick a new id or ungroup the existing group first`);
+      }
       scene.groups.set(group.id, group);
       for (const id of ids) scene.objects.get(id).group = group.id;
       commit(scene, `group ${ids.length}`, { group: group.id });
@@ -459,12 +575,12 @@ export function createTools(scene) {
         tags: ['csg', operation],
         baseMesh: result
       });
-      scene.objects.set(merged.id, merged);
+      // The result is admitted through the shared gate (uniqueness + budgets)
+      // *before* the operands are removed, so an oversized or colliding result
+      // fails loudly without corrupting the scene.
+      insertObjects(scene, [merged]);
       if (!args.keep_operands) {
-        for (const object of objects) {
-          scene.objects.delete(object.id);
-          scene.selection.delete(object.id);
-        }
+        for (const object of objects) purgeObject(scene, object.id);
       }
       scene.selection = new Set([merged.id]);
       commit(scene, `boolean ${operation}`, { result: merged.id, operands: ids });
@@ -526,7 +642,8 @@ export function createTools(scene) {
         });
         scene.selection = new Set(matches.map((object) => object.id));
       } else if (args.ray) {
-        const { origin, direction } = args.ray;
+        const origin = asVec3(args.ray.origin, 'ray.origin');
+        const direction = asVec3(args.ray.direction, 'ray.direction');
         let best = null;
         for (const object of scene.objects.values()) {
           const t = raycastMesh(worldMesh(object), origin, normalize(direction));
@@ -545,12 +662,12 @@ export function createTools(scene) {
     create_profile_solid(args = {}) {
       const method = args.method || 'extrude';
       let built;
-      if (method === 'extrude') built = extrude(args.profile, args.depth ?? 1, args.options || {});
-      else if (method === 'revolve') built = revolve(args.profile, args.segments ?? 24, args.angle ?? Math.PI * 2);
+      if (method === 'extrude') built = extrude(args.profile, asNumber(args.depth, 'depth', 1), args.options || {});
+      else if (method === 'revolve') built = revolve(args.profile, args.segments ?? 24, asNumber(args.angle, 'angle', Math.PI * 2));
       else if (method === 'sweep') built = sweep(args.profile, args.path, Boolean(args.closed));
       else throw new Error(`create_profile_solid: unknown method "${method}"`);
       const object = makeObject({ ...args, kind: 'freeform', type: 'mesh', baseMesh: built, name: args.name || `${method} solid` });
-      scene.objects.set(object.id, object);
+      insertObjects(scene, [object]);
       scene.selection = new Set([object.id]);
       commit(scene, `${method} solid`, { id: object.id });
       return ok({ object: describe(scene, object, true) });
@@ -562,19 +679,30 @@ export function createTools(scene) {
       const type = args.modifier || args.type;
       if (!MODIFIER_NAMES.includes(type)) throw new Error(`Unknown modifier "${type}". Available: ${MODIFIER_NAMES.join(', ')}`);
       const entry = { id: nextId('mod'), type, options: args.options || {}, enabled: args.enabled !== false };
-      if (args.index !== undefined) object.modifiers.splice(args.index, 0, entry);
+      if (args.index !== undefined) object.modifiers.splice(asNumber(args.index, 'index', 0) | 0, 0, entry);
       else object.modifiers.push(entry);
+      const beforeTris = trianglesOf(object);
       invalidate(object);
-      const before = triangleCount(objectMesh(object));
+      const afterTris = trianglesOf(object);
+      if (scene.triangles - beforeTris + afterTris > scene.limits.max_triangles) {
+        // Roll the edit back: the scene may never cross its triangle budget,
+        // even through the modifier stack.
+        object.modifiers = object.modifiers.filter((m) => m.id !== entry.id);
+        invalidate(object);
+        throw new Error(`Scene triangle budget would be exceeded by this modifier (${scene.triangles.toLocaleString()} + ${(afterTris - beforeTris).toLocaleString()} > ${scene.limits.max_triangles.toLocaleString()})`);
+      }
+      scene.triangles += afterTris - beforeTris;
       commit(scene, `modifier ${type}`, { id, modifier: type });
-      return ok({ object: describe(scene, object), modifier: entry, triangles: before });
+      return ok({ object: describe(scene, object), modifier: entry, triangles: afterTris });
     },
 
     remove_modifier(args = {}) {
       const object = requireObject(scene, args.id || [...scene.selection][0]);
       const before = object.modifiers.length;
-      object.modifiers = object.modifiers.filter((m, i) => m.id !== args.modifier_id && i !== args.index);
+      const beforeTris = trianglesOf(object);
+      object.modifiers = object.modifiers.filter((m, i) => m.id !== args.modifier_id && i !== (args.index !== undefined ? asNumber(args.index, 'index') | 0 : -1));
       invalidate(object);
+      scene.triangles += trianglesOf(object) - beforeTris;
       commit(scene, 'remove modifier', { id: object.id });
       return ok({ removed: before - object.modifiers.length, modifiers: object.modifiers.map((m) => m.type) });
     },
@@ -585,8 +713,10 @@ export function createTools(scene) {
       const byId = new Map(object.modifiers.map((m) => [m.id, m]));
       const reordered = order.map((id) => byId.get(id)).filter(Boolean);
       if (reordered.length !== object.modifiers.length) throw new Error('reorder_modifiers: order must list every modifier id');
+      const beforeTris = trianglesOf(object);
       object.modifiers = reordered;
       invalidate(object);
+      scene.triangles += trianglesOf(object) - beforeTris;
       commit(scene, 'reorder modifiers', { id: object.id });
       return ok({ modifiers: object.modifiers.map((m) => m.type) });
     },
@@ -595,7 +725,14 @@ export function createTools(scene) {
       const validation = validateGraph(args.graph);
       if (!validation.valid) throw new Error(`define_graph: ${validation.errors.join('; ')}`);
       const id = args.id || nextId('graph');
+      if (scene.graphs.has(id)) {
+        // Redefinition silently changing geometry out from under objects that
+        // reference the old graph is the same identity-overwrite bug as
+        // objects, so it is refused — graph state is journaled and undoable.
+        throw new Error(`Graph id "${id}" already exists — pick a new id (existing graphs stay live and can be re-evaluated)`);
+      }
       scene.graphs.set(id, args.graph);
+      commit(scene, 'define graph', { id });
       return ok({ graph_id: id, validation });
     },
 
@@ -611,7 +748,7 @@ export function createTools(scene) {
       });
       object.graph_id = args.graph_id || null;
       object.graph_parameters = result.parameters;
-      scene.objects.set(object.id, object);
+      insertObjects(scene, [object]);
       scene.selection = new Set([object.id]);
       commit(scene, 'evaluate graph', { id: object.id });
       return ok({ object: describe(scene, object), stats: result.stats, trace: result.trace, parameters: result.parameters });
@@ -622,17 +759,22 @@ export function createTools(scene) {
     import_mesh(args = {}) {
       const data = args.data ?? args.content;
       if (data === undefined) throw new Error('import_mesh: provide data (text or bytes)');
-      const imported = importMesh(data, args.format || 'auto');
+      // The parsers enforce the budget *while* decoding, so an oversized asset
+      // is refused before it can exhaust memory — not after it is stored.
+      const imported = importMesh(data, args.format || 'auto', {
+        maxTriangles: Math.max(0, scene.limits.max_triangles - scene.triangles)
+      });
       if (!triangleCount(imported)) throw new Error('import_mesh: file contained no triangles');
       let built = imported;
       if (args.normalize) {
         const b = bounds(built);
         const largest = Math.max(...b.size) || 1;
-        const s = (args.target_size || 1) / largest;
+        const s = asNumber(args.target_size, 'target_size', 1) / largest;
+        if (!(s > 0)) throw new Error('import_mesh: target_size must be a positive number');
         built = transformMesh(built, compose([-b.center[0] * s, -b.center[1] * s, -b.center[2] * s], [0, 0, 0], [s, s, s]));
       }
       const object = makeObject({ ...args, kind: 'imported', type: 'mesh', baseMesh: built, name: args.name || 'imported mesh' });
-      scene.objects.set(object.id, object);
+      insertObjects(scene, [object]);
       scene.selection = new Set([object.id]);
       commit(scene, 'import mesh', { id: object.id });
       return ok({ object: describe(scene, object, true), manifold: manifoldReport(built) });
@@ -712,13 +854,21 @@ export function createTools(scene) {
         type: args.type || 'revolute',
         parent: args.parent,
         child: args.child,
-        anchor: args.anchor || [0, 0, 0],
-        axis: args.axis || [0, 1, 0],
-        limits: args.limits || null
+        anchor: args.anchor !== undefined ? asVec3(args.anchor, 'anchor') : [0, 0, 0],
+        axis: args.axis !== undefined ? asVec3(args.axis, 'axis') : [0, 1, 0],
+        limits: args.limits !== undefined
+          ? asVec2(args.limits, 'limits').map((n) => n).slice(0, 2)
+          : null
       };
+      if (joint.limits && (joint.limits[0] > joint.limits[1])) {
+        throw new Error('add_joint: limits must be [min, max] with min ≤ max');
+      }
       if (!JOINT_TYPES.includes(joint.type)) throw new Error(`Unknown joint type "${joint.type}"`);
       requireObject(scene, joint.parent);
       requireObject(scene, joint.child);
+      if (scene.joints.has(joint.id)) {
+        throw new Error(`Joint id "${joint.id}" already exists — pick a new id`);
+      }
       scene.joints.set(joint.id, joint);
       commit(scene, `joint ${joint.type}`, { id: joint.id });
       return ok({ joint, mobility: mechanismMobility(scene.objects.size, [...scene.joints.values()]) });
@@ -801,12 +951,21 @@ export function createTools(scene) {
 
     set_environment(args = {}) {
       const env = scene.environment;
-      if (args.hdri) env.hdri = args.hdri;
-      if (args.exposure !== undefined) env.exposure = Math.max(0, args.exposure);
-      if (args.background) env.background = args.background;
-      if (args.ambient_intensity !== undefined) env.ambient_intensity = Math.max(0, args.ambient_intensity);
+      if (args.hdri) env.hdri = String(args.hdri);
+      if (args.exposure !== undefined) env.exposure = Math.max(0, asNumber(args.exposure, 'exposure'));
+      if (args.background) env.background = String(args.background);
+      if (args.ambient_intensity !== undefined) env.ambient_intensity = Math.max(0, asNumber(args.ambient_intensity, 'ambient_intensity'));
       if (args.shadows !== undefined) env.shadows = Boolean(args.shadows);
-      if (args.post) env.post = { ...env.post, ...args.post };
+      if (args.post) {
+        const post = { ...env.post, ...args.post };
+        for (const key of ['bloom', 'ssao', 'vignette']) {
+          if (post[key] !== undefined) post[key] = Math.max(0, asNumber(post[key], `post.${key}`));
+        }
+        if (post.tonemap !== undefined && !['aces', 'linear', 'none'].includes(post.tonemap)) {
+          throw new Error(`set_environment: unknown tonemap "${post.tonemap}" — use aces, linear or none`);
+        }
+        env.post = post;
+      }
       commit(scene, 'environment', {});
       return ok({ environment: env });
     },
@@ -825,6 +984,7 @@ export function createTools(scene) {
       scene.groups = new Map();
       scene.joints = new Map();
       scene.selection = new Set();
+      scene.triangles = 0;
       commit(scene, 'clear scene', { removed });
       return ok({ removed });
     }
@@ -845,7 +1005,7 @@ export const TOOL_SCHEMAS = [
   { name: 'rotate_object', description: 'Rotate in degrees (default) or radians, absolutely or by delta, or about a named axis.', parameters: { id: { type: 'string' }, rotation: vec3, delta: vec3, axis: { type: 'string' }, angle: { type: 'number' }, degrees: { type: 'boolean' } } },
   { name: 'scale_object', description: 'Uniform factor, per-axis vector, or a single-axis stretch.', parameters: { id: { type: 'string' }, factor: { type: 'number' }, scale: {}, axis: { type: 'string' }, amount: { type: 'number' } } },
   { name: 'set_material', description: 'Set material, colour, roughness, metalness and opacity.', parameters: { id: { type: 'string' }, ids: { type: 'array' }, material: { type: 'string' }, color: { type: 'string' }, roughness: { type: 'number' }, metalness: { type: 'number' }, opacity: { type: 'number' } } },
-  { name: 'set_camera', description: 'Position the camera, frame the whole scene, or jump to a named view preset.', parameters: { position: vec3, target: vec3, fov: { type: 'number' }, preset: { type: 'string' }, frame_all: { type: 'boolean' } } },
+  { name: 'set_camera', description: 'Position the camera, frame the whole scene, jump to a named view preset, or switch projection (perspective/orthographic).', parameters: { position: vec3, target: vec3, up: vec3, fov: { type: 'number' }, near: { type: 'number' }, far: { type: 'number' }, projection: { type: 'string' }, preset: { type: 'string' }, frame_all: { type: 'boolean' }, direction: vec3 } },
   { name: 'group_objects', description: 'Group objects under a named parent for collective reasoning.', parameters: { ids: { type: 'array' }, name: { type: 'string' } } },
   { name: 'ungroup_objects', description: 'Dissolve a group, leaving its children in the scene.', parameters: { group_id: { type: 'string' } } },
   { name: 'boolean_operation', description: 'Exact CSG: union, subtract, intersect or xor over two or more solids. Returns a closed manifold result.', parameters: { ids: { type: 'array' }, operation: { type: 'string' }, keep_operands: { type: 'boolean' }, name: { type: 'string' } } },

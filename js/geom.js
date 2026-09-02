@@ -413,13 +413,52 @@ export function repairTJunctions(input, tolerance = 1e-7) {
       const found = new Set();
       const lo = [0, 1, 2].map((i) => Math.floor(Math.min(a[i], b[i]) / cell) - 1);
       const hi = [0, 1, 2].map((i) => Math.floor(Math.max(a[i], b[i]) / cell) + 1);
-      if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 4096) return [...points.keys()];
-      for (let x = lo[0]; x <= hi[0]; x += 1) {
-        for (let y = lo[1]; y <= hi[1]; y += 1) {
-          for (let z = lo[2]; z <= hi[2]; z += 1) {
-            for (const index of buckets.get(`${x},${y},${z}`) || []) found.add(index);
+      const addCell = (x, y, z) => {
+        for (const index of buckets.get(`${x},${y},${z}`) || []) found.add(index);
+      };
+      // Short edges: sweep the (padded) bounding box of cells.
+      if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) <= 4096) {
+        for (let x = lo[0]; x <= hi[0]; x += 1) {
+          for (let y = lo[1]; y <= hi[1]; y += 1) {
+            for (let z = lo[2]; z <= hi[2]; z += 1) {
+              addCell(x, y, z);
+            }
           }
         }
+        return [...found];
+      }
+      // Long edges: walk the line one cell at a time (Amanatides–Woo DDA).
+      // The edge passes through O(length / cell) cells, so the work is linear
+      // in edge length instead of falling back to a full vertex scan — which
+      // is what made adversarial meshes degrade to quadratic time.
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const dz = b[2] - a[2];
+      let x = Math.floor(a[0] / cell);
+      let y = Math.floor(a[1] / cell);
+      let z = Math.floor(a[2] / cell);
+      const x1 = Math.floor(b[0] / cell);
+      const y1 = Math.floor(b[1] / cell);
+      const z1 = Math.floor(b[2] / cell);
+      const tDeltaX = dx !== 0 ? cell / Math.abs(dx) : Infinity;
+      const tDeltaY = dy !== 0 ? cell / Math.abs(dy) : Infinity;
+      const tDeltaZ = dz !== 0 ? cell / Math.abs(dz) : Infinity;
+      let tMaxX = dx > 0 ? (cell * (x + 1) - a[0]) / dx : dx < 0 ? (cell * x - a[0]) / dx : Infinity;
+      let tMaxY = dy > 0 ? (cell * (y + 1) - a[1]) / dy : dy < 0 ? (cell * y - a[1]) / dy : Infinity;
+      let tMaxZ = dz > 0 ? (cell * (z + 1) - a[2]) / dz : dz < 0 ? (cell * z - a[2]) / dz : Infinity;
+      addCell(x, y, z);
+      for (let step = 0; step < 100_000 && (x !== x1 || y !== y1 || z !== z1); step += 1) {
+        if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+          x += dx > 0 ? 1 : -1;
+          tMaxX += tDeltaX;
+        } else if (tMaxY <= tMaxZ) {
+          y += dy > 0 ? 1 : -1;
+          tMaxY += tDeltaY;
+        } else {
+          z += dz > 0 ? 1 : -1;
+          tMaxZ += tDeltaZ;
+        }
+        addCell(x, y, z);
       }
       return [...found];
     };

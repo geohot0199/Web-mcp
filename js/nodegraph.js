@@ -48,8 +48,6 @@ export function evaluateExpression(expression, scope = {}) {
       if (next() !== ')') throw new Error('expression: expected )');
       return value;
     }
-    if (token === '-') return -parsePrimary();
-    if (token === '+') return parsePrimary();
     if (/^\d/.test(token)) return Number(token);
     if (FUNCTIONS[token]) {
       if (next() !== '(') throw new Error(`expression: ${token} needs (`);
@@ -66,17 +64,27 @@ export function evaluateExpression(expression, scope = {}) {
     throw new Error(`expression: unknown identifier "${token}"`);
   }
 
+  // Precedence (low → high): additive · multiplicative · unary · power.
+  // The unary minus sits *below* exponentiation, matching the mathematical
+  // convention that -2^2 = -(2^2) = -4, while 2^-3 still parses because the
+  // exponent itself is a signed factor.
+  function parseUnary() {
+    if (peek() === '-') { next(); return -parseUnary(); }
+    if (peek() === '+') { next(); return parseUnary(); }
+    return parsePower();
+  }
+
   function parsePower() {
     const base = parsePrimary();
-    if (peek() === '^') { next(); return base ** parsePower(); }
+    if (peek() === '^') { next(); return base ** parseUnary(); }
     return base;
   }
 
   function parseMultiplicative() {
-    let value = parsePower();
+    let value = parseUnary();
     while (peek() === '*' || peek() === '/' || peek() === '%') {
       const op = next();
-      const rhs = parsePower();
+      const rhs = parseUnary();
       value = op === '*' ? value * rhs : op === '/' ? value / rhs : value % rhs;
     }
     return value;
@@ -132,6 +140,29 @@ function topologicalOrder(nodes) {
   };
   for (const node of nodes) visit(node.id);
   return order;
+}
+
+/**
+ * The graph's result is its *terminal*: an output node nothing else consumes
+ * (or, when the graph carries no output node at all, the last node in
+ * topological order). Validation and evaluation must agree on this — a graph
+ * with two live terminals, or with its output consumed downstream, is
+ * ambiguous and is rejected rather than silently picking one.
+ */
+export function terminalNode(nodes) {
+  const referenced = new Set(nodes.flatMap((node) => (Array.isArray(node.inputs) ? node.inputs : [])));
+  const outputs = nodes.filter((node) => node.type === 'output');
+  const terminals = outputs.filter((node) => !referenced.has(node.id));
+  if (terminals.length > 1) {
+    throw new Error(`graph: exactly one terminal output is required — found ${terminals.length} ("${terminals.map((n) => n.id).join(', ')}")`);
+  }
+  if (outputs.length > 0) {
+    if (!terminals.length) {
+      throw new Error(`graph: output node "${outputs[0].id}" is consumed by another node — the graph must end in an unconsumed output`);
+    }
+    return terminals[0];
+  }
+  return null;
 }
 
 /**
@@ -205,7 +236,10 @@ export function evaluateGraph(graph, overrides = {}) {
     });
   }
 
-  const terminal = nodes.find((node) => node.type === 'output') || ordered[ordered.length - 1];
+  // Same terminal-selection rule validateGraph uses, so the pre-flight
+  // promise and the runtime result can never disagree.
+  const declared = terminalNode(nodes);
+  const terminal = declared || ordered[ordered.length - 1];
   const result = results.get(terminal.id);
   if (!result || !result.indices) throw new Error('graph: terminal node did not produce a mesh');
 
@@ -259,10 +293,14 @@ export function validateGraph(graph) {
     try { topologicalOrder(nodes); } catch (error) { errors.push(error.message); }
   }
 
-  const referenced = new Set(nodes.flatMap((node) => (Array.isArray(node.inputs) ? node.inputs : [])));
-  const terminals = nodes.filter((node) => !referenced.has(node.id));
-  if (terminals.length > 1) warnings.push(`${terminals.length} terminal nodes — only "${terminals[terminals.length - 1].id}" will be returned.`);
-  if (!nodes.some((node) => node.type === 'output')) warnings.push('No explicit output node; the last node in topological order is used.');
+  // Mirror the runtime terminal rule exactly: evaluation returns whatever
+  // validation promises here.
+  if (!errors.length) {
+    try { terminalNode(nodes); } catch (error) { errors.push(error.message); }
+  }
+  if (!nodes.some((node) => node.type === 'output')) {
+    warnings.push('No explicit output node; the last node in topological order is used.');
+  }
 
   return { valid: errors.length === 0, errors, warnings, node_count: nodes.length, parameters: Object.keys(graph?.parameters || {}) };
 }
