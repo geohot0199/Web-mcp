@@ -71,7 +71,9 @@ The studio is built around one idea: **your selection is your pointer into the c
 - **Edit locks.** While the agent works on a form, the human’s drag/inspector/delete on that same form is locked out (outline + inspector show it) — no races between the two collaborators.
 - **Permissions, not trust.** Six human-controlled gates: **Read · Create · Modify · Delete · Export · Share**. Turn off Read and every read tool — and the local bridge — politely refuse.
 - **Full-space canvas.** The **⤢ / ⤡** buttons in the canvas HUD (or the `V` key / Viewport focus control) collapse and restore the manual panels on demand, so you can frame the model in the entire 3D space — the agent keeps working while the chrome disappears.
-- **Take the model with you.** **Download STL ⤓** in the canvas toolbar saves the current scene locally, with the file attached to the chat as a card you can re-download anytime. Agent-initiated exports do the same thing through the approval flow — the STL downloads and the file lands in the conversation. Nothing is ever uploaded.
+- **Take the model with you.** **Export ↗** (header) or **Download STL ⤓** (canvas toolbar) opens the export dialog and saves the current scene locally, with the file attached to the chat as a card you can re-download anytime. Agent-initiated exports do the same thing through the approval flow — the STL downloads and the file lands in the conversation. Nothing is ever uploaded.
+  - **Always a 3D solid.** The exporter never dumps the viewport meshes as-is: every form is baked into world space as a closed body, flat `plane` sheets are thickened into slabs, collapsed scale axes are clamped, degenerate facets are dropped, and mirrored transforms are re-wound outward. A flat, "2D" STL can no longer leave the studio — the dialog reports the facet count and the exported bounds before you commit.
+  - **Two flavours.** **1 · Colour** writes each facet's scene colour into the binary STL (Materialise Magics / VisCAM colour attribute plus a `COLOR=` header) so colour-aware viewers show the palette. **2 · Solid** writes one uniform, *dark* grey body — fully opaque, no transparency, glass and translucent finishes become solid mass — as a plain STL every slicer reads identically. Picking a flavour previews it live in the viewport, so what you see is what the file contains.
 - **Time-travel audit.** Every action (human or agent) is logged with parameters and a scene snapshot. Scrub the timeline to inspect any past state read-only, then return to live.
 - **Orbit connection — no API keys.** Click **Orbit connection** in the top bar and connect in one click. There is no key to paste, no provider account, and no credential stored anywhere — the keyless connection lives in memory for the current tab only. Open-ended builds are handed to Orbit's planning model and still come back as approval-gated proposals; deterministic reads and edits stay local, and everything falls back to the built-in planner if the connection is unavailable.
 - **Wipe after use.** The same panel has **Wipe everything** (two-click armed confirmation), which clears the scene, checkpoints, history, activity, annotations, constraints, preferences, the share fragment, and the Orbit connection in one go.
@@ -189,7 +191,7 @@ await window.webMCPStudio.callTool('edit_geometry', { operation: 'stretch', axis
 | **Control** | `undo_agent_changes` | Revert the latest reversible agent batch |
 | | `interrupt_agent_run` | Stop a live streamed run cleanly at an operation boundary |
 | **Collaborate** | `add_comment` | Attach a contextual annotation to a form |
-| **Sensitive** | `export_stl` | Permission-gated, approval-staged local STL download — the file downloads and is attached to the chat as a re-downloadable card |
+| **Sensitive** | `export_stl` | Permission-gated, approval-staged local 3D STL download (`mode`: `color` or `solid`) — the closed solid downloads and is attached to the chat as a re-downloadable card |
 | | `share_scene` | Permission-gated, approval-staged URL-fragment state link (no upload) |
 
 ---
@@ -198,7 +200,7 @@ await window.webMCPStudio.callTool('edit_geometry', { operation: 'stretch', axis
 
 Orbit runs on a small, deliberate stack — no framework, no build step, no server:
 
-- **Three.js r164** (ES modules via an import map, so addon imports like `OrbitControls` and `STLExporter` resolve their bare `three` specifier) — rendering, raycast picking, selection bounds, grid, procedural `CanvasTexture`s, and local STL export. If WebGL is unavailable, the viewport is replaced with an explanation and **everything else keeps working** — the object list, inspector, history, and all 32 tools.
+- **Three.js r164** (ES modules via an import map, so addon imports like `OrbitControls` and `STLExporter` resolve their bare `three` specifier) — rendering, raycast picking, selection bounds, grid, and procedural `CanvasTexture`s. STL writing is Orbit's own (`js/stl-export.js`): it re-derives solid geometry from scene state and emits binary STL with optional per-facet colour, verified by `npm run test:stl`. If WebGL is unavailable, the viewport is replaced with an explanation and **everything else keeps working** — the object list, inspector, history, and all 32 tools.
 - **A pure, deterministic intent router** (`js/agent-router.js`). A dependency-free set of functions — `routePrompt`, `detectColor`, `textureParameters`, `geometryParameters`, `extractRestoreTarget`… — maps natural language to `{ tool, parameters, requiresHumanApproval, sensitive }`. Deterministic on purpose: the same sentence always routes the same way, which is what makes it *testable* (below).
 - **A WebMCP tool registry.** 32 JSON-schema-described tools whose handlers read the *live* scene, stage proposals, and attach `live_context` to every successful result. Registered natively via `navigator.modelContext` when available; always available through `window.webMCPStudio`.
 - **One shared in-memory scene state.** Objects, constraints, comments, intent, history, versions, proposals, permissions, and the activity log live in a single plain-JS store that powers the canvas, the inspector, the planner, the tools, and the persistence layer — so the human and the agent can never see different worlds.
@@ -261,7 +263,7 @@ python3 -m http.server 8080 --bind 0.0.0.0
 # → http://localhost:8080
 ```
 
-> Three.js, OrbitControls and STLExporter load as ES modules from jsDelivr, so the browser needs internet access — or vendor them locally for an offline deployment.
+> Three.js and OrbitControls load as ES modules from jsDelivr, so the browser needs internet access — or vendor them locally for an offline deployment.
 
 **Verify the agent layer:**
 
