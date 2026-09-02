@@ -1,16 +1,27 @@
 {
-  "name": "orbit-webmcp-co-design-studio",
-  "version": "1.0.0",
+  "name": "orbit-webmcp-3d-kernel",
+  "version": "2.0.0",
   "private": true,
-  "description": "Static human-agent 3D co-design workspace with goal-oriented WebMCP tools.",
+  "description": "Agent-native WebMCP 3D modelling kernel: exact CSG booleans, freeform geometry, procedural modifiers, parametric node graphs, mesh import/export and physics validation. No human approval layer.",
   "type": "module",
   "scripts": {
-    "check": "node --check js/app.js && node --check js/agent-router.js && node --check js/orbit-connection.js && node --check js/stl-export.js && node scripts/run-agent-evals.mjs && node scripts/test-stl-export.mjs",
-    "evals": "node scripts/run-agent-evals.mjs",
-    "test:stl": "node scripts/test-stl-export.mjs",
-    "test:stl:optional": "node scripts/test-stl-export.mjs --optional"
+    "check": "npm run lint && npm run test:kernel && npm run test:webmcp && npm run test:adversarial",
+    "lint": "node --check js/geom.js && node --check js/primitives.js && node --check js/csg.js && node --check js/modifiers.js && node --check js/io.js && node --check js/physics.js && node --check js/nodegraph.js && node --check js/scene.js && node --check js/webmcp.js && node --check js/app.js",
+    "test:kernel": "node scripts/test-kernel.mjs",
+    "test:webmcp": "node scripts/test-webmcp.mjs",
+    "test:adversarial": "node scripts/test-adversarial.mjs",
+    "serve": "python3 -m http.server 8080 --bind 0.0.0.0"
   },
+  "keywords": [
+    "webmcp",
+    "3d",
+    "csg",
+    "agent",
+    "mcp",
+    "geometry",
+    "parametric"
+  ],
   "devDependencies": {
-    "three": "0.164.0"
+    "three": "^0.164.0"
   }
 }

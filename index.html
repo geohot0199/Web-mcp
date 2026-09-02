@@ -3,510 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="Orbit is a monochrome WebMCP co-design studio: an agent inspects the scene, changes geometry and refines textures while you watch every edit land in the 3D viewport.">
-  <title>Orbit — WebMCP 3D Co-design Studio</title>
+  <meta name="theme-color" content="#0b0b0c">
+  <meta name="description" content="Orbit is an agent-native WebMCP 3D modelling kernel: exact CSG booleans, freeform geometry, procedural modifiers, parametric node graphs, mesh import/export and physics validation — driven entirely by AI agents, with no human approval step.">
+  <title>Orbit — Agent-Native 3D Kernel · WebMCP</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <!-- OpenAI Sans is proprietary; Inter is the closest open fallback and matches its metrics. -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-  <div class="grain" aria-hidden="true"></div>
-
-  <div id="app" class="app-shell">
-    <header class="topbar">
-      <a class="brand" href="#" aria-label="Orbit co-design studio home">
-        <span class="brand-mark"><i></i><i></i><i></i></span>
-        <span>
-          <strong>orbit</strong>
-          <small>WebMCP co-design studio</small>
-        </span>
-      </a>
-
-      <div class="topbar-center">
-        <span class="live-dot"></span>
-        <span id="top-status">Agent ready</span>
-        <span class="topbar-divider"></span>
-        <span id="object-count-top">0 objects</span>
-      </div>
-
-      <div class="top-actions">
-        <button id="focus-viewport-btn" class="button button-quiet" type="button" aria-pressed="false" title="Give the viewport the full width (V)">
-          <span class="button-icon">▣</span> Viewport focus
-        </button>
-        <button id="review-btn" class="button button-quiet" type="button">
-          <span class="button-icon">✦</span> Design review
-        </button>
-        <button id="checkpoint-btn" class="button button-quiet" type="button">
-          <span class="button-icon">⌘</span> Checkpoint
-        </button>
-        <button id="orbit-connection-btn" class="button button-quiet" type="button">
-          <span class="button-icon">◈</span> Orbit connection
-        </button>
-        <button id="export-btn" class="button button-primary" type="button">
-          Export <span aria-hidden="true">↗</span>
-        </button>
-      </div>
-    </header>
-
-    <main class="studio-layout">
-      <aside class="sidebar left-sidebar" aria-label="Scene controls">
-        <section class="sidebar-section scene-section">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Workspace</span>
-              <h2>Scene outline</h2>
-            </div>
-            <button id="focus-scene-btn" class="icon-button" type="button" aria-label="Focus complete scene" title="Focus complete scene">⌖</button>
-          </div>
-          <div class="scene-summary">
-            <span class="scene-summary-orb"></span>
-            <span id="scene-summary-text">Ready for an idea</span>
-            <span id="scene-summary-count">00</span>
-          </div>
-          <div id="object-list" class="object-list" aria-live="polite"></div>
-        </section>
-
-        <section class="sidebar-section add-section">
-          <div class="section-heading compact">
-            <div>
-              <span class="eyebrow">Build by hand</span>
-              <h2>Primitive library</h2>
-            </div>
-          </div>
-          <div class="primitive-grid">
-            <button class="primitive-button" type="button" data-add="cube"><span class="primitive-icon cube-icon"></span><span>Cube</span></button>
-            <button class="primitive-button" type="button" data-add="sphere"><span class="primitive-icon sphere-icon"></span><span>Sphere</span></button>
-            <button class="primitive-button" type="button" data-add="cylinder"><span class="primitive-icon cylinder-icon"></span><span>Cylinder</span></button>
-            <button class="primitive-button" type="button" data-add="cone"><span class="primitive-icon cone-icon"></span><span>Cone</span></button>
-            <button class="primitive-button" type="button" data-add="torus"><span class="primitive-icon torus-icon"></span><span>Torus</span></button>
-            <button class="primitive-button" type="button" data-add="plane"><span class="primitive-icon plane-icon"></span><span>Plane</span></button>
-          </div>
-        </section>
-
-        <section class="sidebar-section inspector-section">
-          <div class="section-heading compact">
-            <div>
-              <span class="eyebrow">Selection</span>
-              <h2>Object inspector</h2>
-            </div>
-            <span id="selected-status" class="selection-status">None</span>
-          </div>
-
-          <div id="inspector-empty" class="inspector-empty">
-            <span class="empty-select-icon">⌁</span>
-            Select an object on the canvas to inspect and refine it.
-          </div>
-
-          <div id="inspector-content" class="inspector-content hidden">
-            <label class="input-label">Name
-              <input id="object-name-input" class="text-input" maxlength="48" autocomplete="off">
-            </label>
-            <div class="object-meta-row">
-              <span id="object-type-badge" class="object-type-badge">Cube</span>
-              <span id="object-id-label" class="object-id-label"></span>
-            </div>
-
-            <div class="transform-block">
-              <div class="property-title"><span>Position</span><small>units</small></div>
-              <div class="vector-inputs">
-                <label><b>X</b><input class="number-input" data-transform="position" data-axis="0" type="number" step="0.1"></label>
-                <label><b>Y</b><input class="number-input" data-transform="position" data-axis="1" type="number" step="0.1"></label>
-                <label><b>Z</b><input class="number-input" data-transform="position" data-axis="2" type="number" step="0.1"></label>
-              </div>
-            </div>
-            <div class="transform-block">
-              <div class="property-title"><span>Scale</span><small>ratio</small></div>
-              <div class="vector-inputs">
-                <label><b>X</b><input class="number-input" data-transform="scale" data-axis="0" type="number" min="0.05" step="0.1"></label>
-                <label><b>Y</b><input class="number-input" data-transform="scale" data-axis="1" type="number" min="0.05" step="0.1"></label>
-                <label><b>Z</b><input class="number-input" data-transform="scale" data-axis="2" type="number" min="0.05" step="0.1"></label>
-              </div>
-            </div>
-
-            <div class="transform-block">
-              <div class="property-title"><span>Geometry</span><small>resolution</small></div>
-              <div class="chip-row" id="detail-chips">
-                <button type="button" data-detail="low">Low poly</button>
-                <button type="button" data-detail="standard">Standard</button>
-                <button type="button" data-detail="high">High</button>
-              </div>
-              <div class="readout-row">
-                <span>Triangles</span><b id="object-triangles">0</b>
-              </div>
-            </div>
-
-            <div class="material-block">
-              <div class="property-title"><span>Finish</span><small>appearance</small></div>
-              <div class="material-chips">
-                <button type="button" data-material="metal">Metal</button>
-                <button type="button" data-material="plastic">Matte</button>
-                <button type="button" data-material="glass">Glass</button>
-                <button type="button" data-material="wood">Grain</button>
-                <button type="button" data-material="emissive">Emissive</button>
-              </div>
-              <div class="color-row" aria-label="Object colour">
-                <button class="color-swatch" type="button" data-color="#808080" style="--swatch:#808080" aria-label="Default grey"></button>
-                <button class="color-swatch" type="button" data-color="#111111" style="--swatch:#111111" aria-label="Ink"></button>
-                <button class="color-swatch" type="button" data-color="#fafafa" style="--swatch:#fafafa" aria-label="White"></button>
-                <button class="color-swatch" type="button" data-color="#d94040" style="--swatch:#d94040" aria-label="Red"></button>
-                <button class="color-swatch" type="button" data-color="#e87030" style="--swatch:#e87030" aria-label="Orange"></button>
-                <button class="color-swatch" type="button" data-color="#d9c830" style="--swatch:#d9c830" aria-label="Yellow"></button>
-                <button class="color-swatch" type="button" data-color="#40a848" style="--swatch:#40a848" aria-label="Green"></button>
-                <button class="color-swatch" type="button" data-color="#3868d0" style="--swatch:#3868d0" aria-label="Blue"></button>
-                <button class="color-swatch" type="button" data-color="#7840c0" style="--swatch:#7840c0" aria-label="Purple"></button>
-                <button class="color-swatch" type="button" data-color="#e070a0" style="--swatch:#e070a0" aria-label="Pink"></button>
-                <input id="object-color-input" type="color" value="#808080" aria-label="Choose a custom object colour">
-              </div>
-            </div>
-
-            <div class="material-block">
-              <div class="property-title"><span>Texture</span><small>procedural</small></div>
-              <div class="chip-row" id="texture-chips">
-                <button type="button" data-texture="none">None</button>
-                <button type="button" data-texture="grid">Grid</button>
-                <button type="button" data-texture="brushed">Brushed</button>
-                <button type="button" data-texture="noise">Grain</button>
-                <button type="button" data-texture="checker">Checker</button>
-                <button type="button" data-texture="hatch">Hatch</button>
-                <button type="button" data-texture="dots">Dots</button>
-              </div>
-              <label class="slider-label">Texture scale <b id="texture-scale-value">1.0×</b>
-                <input id="texture-scale-input" class="slider" type="range" min="0.25" max="8" step="0.25" value="1">
-              </label>
-              <label class="slider-label">Roughness <b id="roughness-value">0.60</b>
-                <input id="roughness-input" class="slider" type="range" min="0" max="1" step="0.01" value="0.6">
-              </label>
-              <label class="slider-label">Metalness <b id="metalness-value">0.05</b>
-                <input id="metalness-input" class="slider" type="range" min="0" max="1" step="0.01" value="0.05">
-              </label>
-            </div>
-
-            <div class="inspector-actions">
-              <button id="duplicate-btn" class="button button-small button-quiet" type="button">Duplicate</button>
-              <button id="delete-btn" class="button button-small button-danger" type="button">Delete</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="sidebar-section constraint-section">
-          <div class="section-heading compact">
-            <div>
-              <span class="eyebrow">Guardrails</span>
-              <h2>Design constraints</h2>
-            </div>
-            <button id="validate-constraints-btn" class="text-button" type="button">Check</button>
-          </div>
-          <div class="constraint-actions">
-            <button class="constraint-button" type="button" data-constraint="symmetry">↔ Symmetry</button>
-            <button class="constraint-button" type="button" data-constraint="ground">⌄ On ground</button>
-          </div>
-          <div id="constraint-list" class="constraint-list"></div>
-        </section>
-
-        <section class="sidebar-section annotations-section">
-          <div class="section-heading compact">
-            <div>
-              <span class="eyebrow">Collaborate in context</span>
-              <h2>Annotations</h2>
-            </div>
-          </div>
-          <div class="annotation-composer">
-            <input id="comment-input" class="text-input" maxlength="160" placeholder="Leave feedback on selection…" autocomplete="off">
-            <button id="add-comment-btn" class="icon-button icon-button-filled" type="button" aria-label="Add annotation">↑</button>
-          </div>
-          <div id="comment-list" class="comment-list"></div>
-        </section>
-      </aside>
-
-      <section class="canvas-column" aria-label="3D design canvas">
-        <div class="canvas-frame">
-          <div id="canvas-container" aria-label="Interactive 3D model canvas"></div>
-          <div class="canvas-scanlines" aria-hidden="true"></div>
-
-          <div class="canvas-top-hud">
-            <div class="canvas-label"><span class="canvas-label-dot"></span> Live canvas</div>
-            <div class="canvas-hud-right">
-              <div class="canvas-view-controls" role="group" aria-label="Canvas size">
-                <button id="canvas-expand-btn" class="icon-button hud-icon-button" type="button" aria-pressed="false" title="Full 3D space — hide the manual panels (V)">⤢</button>
-                <button id="canvas-collapse-btn" class="icon-button hud-icon-button" type="button" aria-pressed="true" title="Restore the manual panels (V)">⤡</button>
-              </div>
-              <div class="camera-readout"><span>CAM</span> <span id="camera-readout">ISO 02</span></div>
-            </div>
-          </div>
-
-          <div id="empty-canvas" class="empty-canvas">
-            <div class="empty-orbit"><i></i><i></i><i></i></div>
-            <div>
-              <span class="eyebrow">Human + agent workspace</span>
-              <h1>Inspect the scene.<br>Change geometry. Refine textures.</h1>
-              <p>The agent works through WebMCP on the same scene you do. Watch every edit land in this viewport, then steer the next one.</p>
-              <button id="empty-start-btn" class="button button-primary" type="button">Design a delivery drone <span>↗</span></button>
-            </div>
-          </div>
-
-          <div id="selection-hud" class="selection-hud hidden">
-            <span class="selection-hud-dot"></span>
-            <span id="selection-hud-name">Object</span>
-            <span class="selection-hud-key">selected</span>
-          </div>
-
-          <div id="agent-build-overlay" class="agent-build-overlay hidden" aria-live="polite">
-            <span class="eyebrow">Live agent build</span>
-            <strong id="agent-build-step">Preparing shared scene…</strong>
-            <div class="build-progress"><i id="agent-build-progress"></i></div>
-            <small id="agent-build-count">0 / 0 operations</small>
-          </div>
-
-          <div id="time-travel-overlay" class="time-travel-overlay hidden" aria-live="polite">
-            <span class="eyebrow">Time-travel preview</span>
-            <strong id="time-travel-overlay-title">Inspecting a past scene state</strong>
-            <small>Edits are paused until you return to live.</small>
-            <button id="exit-time-travel-canvas" type="button">Return to live ↗</button>
-          </div>
-
-          <div id="gesture-hud" class="gesture-hud" aria-live="polite">
-            <span>⌖</span><strong id="gesture-hud-name">Point at a form to ground “that”</strong>
-          </div>
-
-          <div class="canvas-bottom-hud">
-            <span><kbd>drag</kbd> orbit</span>
-            <span><kbd>⇧ drag</kbd> move</span>
-            <span><kbd>scroll</kbd> zoom</span>
-            <span><kbd>click</kbd> select</span>
-          </div>
-        </div>
-
-        <div class="canvas-toolbar">
-          <div class="mode-switch" role="group" aria-label="Agent interaction mode">
-            <button type="button" data-mode="planning" class="active"><span></span> Planning</button>
-            <button type="button" data-mode="direct"><span></span> Direct</button>
-          </div>
-          <div class="toolbar-divider"></div>
-          <button id="fit-view-btn" class="toolbar-button" type="button">Fit scene</button>
-          <button id="grid-snap-btn" class="toolbar-button" type="button">Snap selection</button>
-          <button id="reset-view-btn" class="toolbar-button" type="button">Reset view</button>
-          <button id="download-stl-btn" class="toolbar-button" type="button">Download STL ⤓</button>
-          <span id="canvas-message" class="canvas-message" aria-live="polite"></span>
-        </div>
-
-        <section class="version-rail" aria-label="Design versions">
-          <div class="version-rail-heading"><span class="eyebrow">Versions</span><span class="version-line"></span></div>
-          <div id="version-list" class="version-list"></div>
-          <button id="new-version-btn" class="new-version-button" type="button"><span>+</span> Save checkpoint</button>
-        </section>
-      </section>
-
-      <aside class="sidebar agent-sidebar" aria-label="Agent collaboration panel">
-        <div class="agent-header">
-          <div class="agent-avatar"><span>✦</span></div>
-          <div>
-            <span class="eyebrow">Your co-designer</span>
-            <h2>Orbit Agent</h2>
-          </div>
-          <button id="permissions-btn" class="icon-button" type="button" aria-label="Agent permissions" title="Agent permissions">⚙</button>
-        </div>
-
-        <div id="agent-status-card" class="agent-status-card ready">
-          <span class="status-orb"><i></i></span>
-          <div>
-            <strong id="agent-status-title">Ready to collaborate</strong>
-            <p id="agent-status-copy">I can inspect, plan, build, and review with you.</p>
-          </div>
-        </div>
-
-        <div id="selection-context" class="selection-context" title="This context updates whenever the human changes the selection or points at a form.">
-          <span>Live selection relay</span>
-          <strong id="selection-context-value">No object selected</strong>
-          <small id="selection-context-revision">context v0</small>
-          <div class="memory-inline">
-            <span>Project memory</span>
-            <label class="persona-select-label">Role
-              <select id="persona-select" aria-label="Orbit project persona">
-                <option value="Adaptive co-designer">Adaptive</option>
-                <option value="Visual designer">Designer</option>
-                <option value="Geometry engineer">Engineer</option>
-                <option value="Design reviewer">Reviewer</option>
-              </select>
-            </label>
-            <div id="preference-chips" class="preference-chips"></div>
-            <button id="teach-agent-btn" type="button">Teach Orbit</button>
-          </div>
-        </div>
-
-        <div class="agent-tabs" role="tablist" aria-label="Collaboration views">
-          <button class="agent-tab active" type="button" data-agent-tab="plan" role="tab" aria-selected="true">Plan <span id="plan-count">1</span></button>
-          <button class="agent-tab" type="button" data-agent-tab="activity" role="tab" aria-selected="false">Activity <span id="activity-count">0</span></button>
-        </div>
-
-        <div class="agent-panel-content">
-          <div id="plan-panel" class="agent-tab-panel">
-            <div id="conversation" class="conversation" aria-live="polite">
-              <article class="message agent-message intro-message">
-                <div class="message-avatar">✦</div>
-                <div class="message-bubble">
-                  <span class="message-label">Orbit Agent</span>
-                  <p>I can inspect this scene, change its geometry and refine its textures through WebMCP. Every edit appears in the viewport as a reversible step you approve. What are we building?</p>
-                </div>
-              </article>
-            </div>
-            <div id="proposal-slot" class="proposal-slot"></div>
-            <div class="quick-ideas">
-              <span>Try an idea</span>
-              <button type="button" data-prompt="Design a compact futuristic delivery drone">Delivery drone</button>
-              <button type="button" data-prompt="Inspect this object">Inspect selection</button>
-              <button type="button" data-prompt="Make this low poly">Change geometry</button>
-              <button type="button" data-prompt="Give this a brushed metal texture">Refine texture</button>
-              <button type="button" data-prompt="Review this scene and suggest improvements">Review scene</button>
-            </div>
-          </div>
-
-          <div id="activity-panel" class="agent-tab-panel hidden">
-            <div class="activity-header"><span>Auditable action timeline</span><button id="clear-activity-btn" class="text-button" type="button">Clear</button></div>
-            <div class="timeline-scrubber">
-              <div><span>Time-travel inspector</span><button id="exit-time-travel-btn" class="text-button hidden" type="button">Return live</button></div>
-              <input id="time-travel-range" type="range" min="0" max="0" value="0" aria-label="Scrub agent and human activity timeline">
-              <p id="time-travel-caption">Select a timeline event to inspect its scene snapshot.</p>
-            </div>
-            <div id="activity-list" class="activity-list"></div>
-          </div>
-        </div>
-
-        <form id="agent-composer" class="agent-composer">
-          <label class="composer-label" for="agent-input">Direct the agent</label>
-          <div class="composer-row">
-            <textarea id="agent-input" rows="2" maxlength="500" placeholder="e.g. Make the body more aerodynamic…"></textarea>
-            <button id="voice-agent-btn" class="voice-button" type="button" aria-label="Speak a direction to Orbit" title="Speak a direction to Orbit"><span>⌁</span></button>
-            <button id="send-agent-btn" class="send-button" type="submit" aria-label="Send direction to agent"><span>↑</span></button>
-          </div>
-          <div class="composer-footer"><span id="mode-hint">Planning mode — changes need your approval.</span><span id="voice-status">⌁ Voice + hover grounding ready</span></div>
-        </form>
-      </aside>
-    </main>
-
-    <footer class="app-footer">
-      <span><i class="footer-dot"></i> Shared scene state is live</span>
-      <span>Observe → Plan → Approve → Act → Verify</span>
-      <span id="webmcp-footer-status">Preparing WebMCP tools…</span>
-    </footer>
-  </div>
-
-  <div id="permissions-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="permissions-title">
-    <div class="modal-card permissions-card">
-      <button class="modal-close" type="button" data-close-modal="permissions-modal" aria-label="Close permissions">×</button>
-      <span class="eyebrow">Human control</span>
-      <h2 id="permissions-title">Agent permissions</h2>
-      <p>Choose an autonomy tier for everyday edits. Destructive, export, and sharing requests always remain visible approval steps—even when permission is enabled.</p>
-      <div class="permission-tier-card">
-        <span>Current tier</span>
-        <strong id="permission-tier-label">Guided creation</strong>
-        <small id="permission-tier-copy">Orbit may prepare create and modify work; you approve every plan.</small>
-      </div>
-      <div class="permission-presets" role="group" aria-label="Quick agent permission tiers">
-        <span>Quick tiers</span>
-        <button type="button" data-permission-preset="observe">Observe</button>
-        <button type="button" data-permission-preset="guided">Guided</button>
-        <button type="button" data-permission-preset="full">Full*</button>
-      </div>
-      <div class="permission-list">
-        <label class="permission-row"><span><strong>Read scene</strong><small>Inspect objects, context, and history</small></span><input type="checkbox" data-permission="read" checked><i></i></label>
-        <label class="permission-row"><span><strong>Create objects</strong><small>Prepare new primitives and composites</small></span><input type="checkbox" data-permission="create" checked><i></i></label>
-        <label class="permission-row"><span><strong>Modify objects</strong><small>Prepare transforms and materials</small></span><input type="checkbox" data-permission="modify" checked><i></i></label>
-        <label class="permission-row"><span><strong>Delete objects</strong><small>Stage removals for your approval</small></span><input type="checkbox" data-permission="delete"><i></i></label>
-        <label class="permission-row"><span><strong>Export model</strong><small>Request an STL export</small></span><input type="checkbox" data-permission="export"><i></i></label>
-        <label class="permission-row"><span><strong>Share scene</strong><small>Request a transferable scene link</small></span><input type="checkbox" data-permission="share"><i></i></label>
-      </div>
-      <button class="button button-primary modal-done" type="button" data-close-modal="permissions-modal">Done</button>
-    </div>
-  </div>
-
-  <div id="orbit-connection-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="orbit-connection-title">
-    <div class="modal-card orbit-connection-card">
-      <button class="modal-close" type="button" data-close-modal="orbit-connection-modal" aria-label="Close Orbit connection">×</button>
-      <span class="eyebrow">Orbit connection</span>
-      <h2 id="orbit-connection-title">Connect Orbit — no API keys</h2>
-      <p>No accounts, no API keys, no provider forms. One click connects the studio to Orbit's planning model for open-ended creative builds. There is no credential to store, lose, or leak — the connection lives in this tab's memory only. When you send a creative request, your scene objects (geometry, positions, materials, colours, tags) and remembered design preferences are sent to the Orbit connection so it can propose changes.</p>
-
-      <div id="connection-status-card" class="connection-status-card">
-        <span class="status-orb"><i></i></span>
-        <div>
-          <strong id="connection-status-title">Orbit connection off</strong>
-          <p id="connection-status-copy">Orbit's local deterministic agent keeps working without it.</p>
-        </div>
-      </div>
-
-      <div class="connection-note">Connecting asks for no key and no sign-in, so nothing sensitive is ever written to storage — the connection is held in memory for this tab and cleared on refresh/close. When you ask Orbit to build something, your current scene (objects, geometry, materials, colours, tags, constraints, and remembered preferences) is sent to the Orbit connection so it can propose a plan. If the connection is unavailable, every request falls back to the deterministic local planner automatically.</div>
-
-      <div id="orbit-test-result" class="connection-test-result" aria-live="polite"></div>
-
-      <div class="connection-actions">
-        <button id="orbit-test-btn" class="button button-quiet" type="button">Test connection</button>
-        <button id="orbit-connect-btn" class="button button-primary" type="button">Connect Orbit</button>
-        <button id="orbit-disconnect-btn" class="button button-quiet" type="button">Disconnect</button>
-      </div>
-
-      <section class="wipe-section">
-        <span class="eyebrow">Privacy / after use</span>
-        <h3>Wipe all data</h3>
-        <p>Clears the scene, checkpoints, history, activity, annotations, constraints, saved preferences, the URL share fragment, and the Orbit connection from this browser. Use this when you are finished on a shared or public machine.</p>
-        <button id="wipe-all-btn" class="button button-danger" type="button">Wipe everything</button>
-        <small id="wipe-confirm-hint">Click once to arm, then click again to confirm.</small>
-      </section>
-    </div>
-  </div>
-
-  <div id="review-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="review-title">
-    <div class="modal-card review-card">
-      <button class="modal-close" type="button" data-close-modal="review-modal" aria-label="Close review">×</button>
-      <div class="review-heading">
-        <div><span class="eyebrow">Agent analysis</span><h2 id="review-title">Design review</h2></div>
-        <div id="review-score" class="review-score">—</div>
-      </div>
-      <p id="review-summary" class="review-summary">Add a model to receive a visual and geometric review.</p>
-      <div id="review-metrics" class="review-metrics"></div>
-      <div id="review-metric-detail" class="metric-drilldown" aria-live="polite">Select a score to inspect the evidence behind it.</div>
-      <div id="review-findings" class="review-findings"></div>
-      <div class="review-actions">
-        <button id="apply-review-btn" class="button button-primary hidden" type="button">Prepare improvements</button>
-        <button class="button button-quiet" type="button" data-close-modal="review-modal">Close</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="export-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="export-title">
-    <div class="modal-card export-modal-card">
-      <button class="modal-close" type="button" data-close-modal="export-modal" aria-label="Close export">×</button>
-      <span class="eyebrow">Manufacture</span>
-      <h2 id="export-title">Export 3D model as STL</h2>
-      <p>Orbit writes the full three-dimensional body — every form is baked into world space as a closed solid, flat sheets are thickened, nothing is exported as a 2D surface, and overlapping forms are surfaced as a note rather than a block (every form becomes its own closed body). Choose how the file should be shaded.</p>
-
-      <div class="export-mode-grid" role="radiogroup" aria-label="STL export flavour">
-        <button type="button" class="export-mode-option" data-export-mode="color" role="radio" aria-checked="true">
-          <span class="export-mode-swatch export-mode-swatch-color" id="export-swatch-color" aria-hidden="true"></span>
-          <strong>1 · Colour</strong>
-          <small>Every facet keeps its scene colour — textured surfaces are sampled per facet — written into the binary STL with the Materialise Magics colour extension plus a <code>COLOR=</code> header. Colour-aware viewers show the palette; slicers still read the same solid.</small>
-        </button>
-        <button type="button" class="export-mode-option" data-export-mode="solid" role="radio" aria-checked="false">
-          <span class="export-mode-swatch export-mode-swatch-solid" aria-hidden="true"></span>
-          <strong>2 · Solid</strong>
-          <small>One plain, uncoloured body — fully opaque, no transparency anywhere; glass and translucent finishes become solid mass. The file carries no colour data: slicers and viewers shade it with their own default grey. The dark look of the preview just signals that plain, opaque solid.</small>
-        </button>
-      </div>
-
-      <div id="export-summary" class="export-summary" aria-live="polite">—</div>
-
-      <div class="export-actions">
-        <button class="button button-quiet" type="button" data-close-modal="export-modal">Cancel</button>
-        <button id="export-confirm-btn" class="button button-primary" type="button">Download STL ⤓</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="webmcp-toast" class="webmcp-toast" role="status" aria-live="polite"><span class="toast-dot"></span><span id="webmcp-toast-copy">Preparing studio…</span></div>
-
   <script type="importmap">
     {
       "imports": {
@@ -515,6 +19,111 @@
       }
     }
   </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span class="brand-text">
+          <strong>orbit</strong>
+          <small>agent-native 3D kernel</small>
+        </span>
+      </div>
+
+      <div class="topbar-status">
+        <span class="chip chip-live" id="bridge-status">
+          <span class="dot"></span><span id="bridge-label">bridge initialising</span>
+        </span>
+        <span class="chip" id="autonomy-chip">full autonomy · no approval gate</span>
+      </div>
+
+      <div class="topbar-stats">
+        <span class="stat"><b id="stat-objects">0</b><small>objects</small></span>
+        <span class="stat"><b id="stat-tris">0</b><small>triangles</small></span>
+        <span class="stat"><b id="stat-calls">0</b><small>tool calls</small></span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <!-- ── Left: live scene graph ─────────────────────────────────── -->
+      <aside class="panel panel-left">
+        <div class="panel-head">
+          <h2>Scene graph</h2>
+          <span class="badge" id="selection-count">0 selected</span>
+        </div>
+        <div class="scroll" id="object-list">
+          <p class="empty">No objects. An agent has not created anything yet.</p>
+        </div>
+
+        <div class="panel-head panel-head-sub">
+          <h2>Object detail</h2>
+        </div>
+        <div class="scroll scroll-short" id="object-detail">
+          <p class="empty">Nothing selected.</p>
+        </div>
+      </aside>
+
+      <!-- ── Centre: viewport ───────────────────────────────────────── -->
+      <section class="viewport-wrap">
+        <div id="viewport" class="viewport"></div>
+
+        <div class="viewport-hud">
+          <div class="hud-group" role="group" aria-label="Camera views">
+            <button data-view="iso">iso</button>
+            <button data-view="front">front</button>
+            <button data-view="top">top</button>
+            <button data-view="right">right</button>
+            <button data-view="frame">frame</button>
+          </div>
+          <div class="hud-group hud-right">
+            <button id="toggle-grid" class="is-on">grid</button>
+            <button id="toggle-wire">wireframe</button>
+          </div>
+        </div>
+
+        <div class="viewport-readout" id="viewport-readout">
+          <span id="readout-bounds">—</span>
+        </div>
+      </section>
+
+      <!-- ── Right: agent console ───────────────────────────────────── -->
+      <aside class="panel panel-right">
+        <div class="panel-head">
+          <h2>Tool call stream</h2>
+          <button class="link-btn" id="clear-log">clear</button>
+        </div>
+        <div class="scroll" id="call-log">
+          <p class="empty">Waiting for the first agent tool call.</p>
+        </div>
+
+        <div class="console">
+          <label class="console-label" for="console-input">
+            Direct tool invocation <small>— <code>tool_name {"json": "args"}</code></small>
+          </label>
+          <div class="console-row">
+            <input id="console-input" type="text" spellcheck="false" autocomplete="off"
+                   placeholder='create_object {"type":"torus","material":"metal"}'>
+            <button id="console-run">run</button>
+          </div>
+          <div class="console-quick" id="console-quick"></div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status-message">Orbit kernel ready — <code>window.orbit.call(tool, args)</code></span>
+      <span class="statusbar-right">
+        <span id="status-tools">0 tools</span>
+        <a href="https://github.com/geohot0199/orbit" target="_blank" rel="noopener">source</a>
+      </span>
+    </footer>
+  </div>
+
+  <noscript>
+    <p style="padding:2rem;color:#eee">Orbit is a JavaScript 3D kernel and requires scripting enabled.</p>
+  </noscript>
+
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
