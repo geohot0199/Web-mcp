@@ -14,9 +14,10 @@ import * as THREE from 'three';
  *   - flat primitives are thickened into a slab before triangulation,
  *   - degenerate/zero-area triangles are dropped,
  *   - facet normals are recomputed and re-wound for mirrored transforms,
- *   - forms that interpenetrate are detected up front so the export can refuse
- *     instead of writing non-manifold, intersecting surfaces (no boolean union is
- *     performed — every exported form stays its own closed shell).
+ *   - forms that interpenetrate (including exact duplicates) are detected up front
+ *     and reported as an informational note on the finished file — the download is
+ *     never blocked (no boolean union is performed, so every exported form stays
+ *     its own closed shell).
  *
  * Two export flavours are supported:
  *   - 'color' : binary STL carrying per-facet colour in the Materialise Magics
@@ -253,11 +254,12 @@ export function subdivideForTexture(geometry, { maxUvArea = 1 / 128, maxDepth = 
  * Form-intersection detection
  * ---------------------------
  * Every exported form is written as its own closed shell, so two forms that
- * interpenetrate would produce intersecting/internal facets — a non-manifold file
- * that is not the closed body the export promises. Rather than attempting a boolean
- * union (notoriously fragile for the coplanar, grid-aligned contact this studio's
- * forms produce), the exporter detects interpenetration and refuses with an
- * accurate error. Exact contact — stacked forms, butt joints — stays allowed.
+ * interpenetrate produce intersecting/internal facets rather than a boolean union
+ * (notoriously fragile for the coplanar, grid-aligned contact this studio's forms
+ * produce). That trade-off is accepted deliberately: the download always proceeds,
+ * and detection reports the overlapping or duplicated pairs as an informational
+ * note so the contents of the file stay transparent. Exact contact — stacked
+ * forms, butt joints — is not overlap and reports nothing.
  *
  * Two complementary tests per form pair:
  *   1. surface crossing — an edge of one solid passes strictly through the interior
