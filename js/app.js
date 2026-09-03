@@ -78,6 +78,12 @@ function prefersReducedMotion() {
   return Boolean(reducedMotionQuery?.matches);
 }
 
+/** Damped camera drag is JS-driven inertia; disable it under reduced motion. */
+function syncReducedMotionControls() {
+  if (controls) controls.enableDamping = !prefersReducedMotion();
+}
+reducedMotionQuery?.addEventListener?.('change', syncReducedMotionControls);
+
 /* ------------------------------------------------------------- three */
 
 const viewportEl = document.getElementById('viewport');
@@ -184,8 +190,8 @@ try {
   camera.position.set(4, 3, 6);
 
   controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
   controls.dampingFactor = 0.07;
+  syncReducedMotionControls();
 } catch {
   webglAvailable = false;
   viewportEl.innerHTML = '<div class="viewport-fallback"><p>WebGL is unavailable in this browser.</p>'
