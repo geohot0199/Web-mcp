@@ -132,7 +132,10 @@ orbit.call('evaluate_graph', { graph_id: 'drone', parameters: { arm: 2.4 } });
 │              geom.js — mesh kernel · orient() · manifold reports       │
 │                        │                                               │
 │                        ▼                                               │
-│              app.js — read-only viewport + tool-call stream            │
+│          app.js — console column + live canvas shell                   │
+│                        │                                               │
+│                        ▼                                               │
+│  viewport-decor.js — fading grid · world axes · x/y/z gizmo maths      │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -140,6 +143,43 @@ Roughly **4,200 lines** of dependency-free ES modules. The entire geometry stack
 runs unchanged in Node, which is why it can be tested this hard. Three.js is used
 only to *draw* the mesh arrays the kernel produces — swap it out and nothing
 geometric changes.
+
+---
+
+## The studio shell
+
+One narrow column of console, one dominant canvas.
+
+```text
+┌──────────────┬───────────────────────────────────────────────────────────────┐
+│ calls│scene  │                                                               │
+│              │ live canvas                                                   │
+│ · stream     │ fading ground grid · world X / Y / Z axes                     │
+│ · detail     │ orientation gizmo, bottom-left, click to fly                  │
+│ ───────────  │                                                               │
+│ › invoke     │                                                               │
+└──────────────┴───────────────────────────────────────────────────────────────┘
+```
+
+- **Left, narrow, collapsible.** The tool-call stream — every call with its args,
+  its milliseconds and any self-correction hint — plus the live scene graph and
+  object detail behind a second tab, and a one-line direct invocation box with
+  quick commands underneath. The shell's own panel refreshes read the kernel
+  directly, so they never masquerade as agent traffic in the stream.
+- **Right, dominant.** The canvas: a grid that fades out toward the horizon, the
+  world axes with lettered X/Y/Z ends, a soft contact shadow, and a corner
+  orientation gizmo locked to the live camera that flies you to +X, +Y or +Z.
+- **Black and white.** Paper-white chrome, ink-black type, one accent. The theme
+  button flips the entire shell — canvas background, grid, axes, labels and
+  selection outlines included — and the choice survives a reload.
+- **Motion.** Camera flights instead of cuts, an opening dolly into frame, a
+  spawn flash on new geometry, count-up statistics, a sliding tab pill, staggered
+  stream entries and a hairline pulse across the canvas on every mutation. All of
+  it collapses under `prefers-reduced-motion`.
+
+The shell still never proposes, never asks and never edits — it renders what the
+kernel holds. An agent that calls `set_environment { background }` overrides the
+theme's canvas colour, and the overlays recolour themselves to stay legible.
 
 ---
 

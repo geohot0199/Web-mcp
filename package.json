@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "check": "npm run lint && npm run test:kernel && npm run test:webmcp && npm run test:adversarial",
-    "lint": "node --check js/geom.js && node --check js/primitives.js && node --check js/csg.js && node --check js/modifiers.js && node --check js/io.js && node --check js/physics.js && node --check js/nodegraph.js && node --check js/scene.js && node --check js/webmcp.js && node --check js/app.js",
+    "lint": "node --check js/geom.js && node --check js/primitives.js && node --check js/csg.js && node --check js/modifiers.js && node --check js/io.js && node --check js/physics.js && node --check js/nodegraph.js && node --check js/scene.js && node --check js/webmcp.js && node --check js/viewport-decor.js && node --check js/app.js",
     "test:kernel": "node scripts/test-kernel.mjs",
     "test:webmcp": "node scripts/test-webmcp.mjs",
     "test:adversarial": "node scripts/test-adversarial.mjs",
