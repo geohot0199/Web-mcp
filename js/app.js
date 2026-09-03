@@ -68,6 +68,22 @@ function effectivePalette() {
     : DECOR_PALETTES[theme];
 }
 
+/* ------------------------------------------------- reduced motion */
+
+const reducedMotionQuery = typeof matchMedia === 'function'
+  ? matchMedia('(prefers-reduced-motion: reduce)')
+  : null;
+
+function prefersReducedMotion() {
+  return Boolean(reducedMotionQuery?.matches);
+}
+
+/** Damped camera drag is JS-driven inertia; disable it under reduced motion. */
+function syncReducedMotionControls() {
+  if (controls) controls.enableDamping = !prefersReducedMotion();
+}
+reducedMotionQuery?.addEventListener?.('change', syncReducedMotionControls);
+
 /* ------------------------------------------------------------- three */
 
 const viewportEl = document.getElementById('viewport');
@@ -174,8 +190,8 @@ try {
   camera.position.set(4, 3, 6);
 
   controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
   controls.dampingFactor = 0.07;
+  syncReducedMotionControls();
 } catch {
   webglAvailable = false;
   viewportEl.innerHTML = '<div class="viewport-fallback"><p>WebGL is unavailable in this browser.</p>'
@@ -293,22 +309,35 @@ function rebuildViewport() {
 
     const bornAt = spawned.get(object.id);
     if (bornAt !== undefined) {
-      const flash = new THREE.LineSegments(
-        new THREE.EdgesGeometry(geometry, 1),
-        new THREE.LineBasicMaterial({
-          color: new THREE.Color(palette.selection), transparent: true,
-          opacity: 0.9, depthTest: false, toneMapped: false
-        })
-      );
-      flash.renderOrder = 800;
-      flash.userData.flashFor = object.id;
-      group.add(flash);
+      if (prefersReducedMotion()) {
+        spawned.delete(object.id);
+      } else {
+        const flash = new THREE.LineSegments(
+          new THREE.EdgesGeometry(geometry, 1),
+          new THREE.LineBasicMaterial({
+            color: new THREE.Color(palette.selection), transparent: true,
+            opacity: 0.9, depthTest: false, toneMapped: false
+          })
+        );
+        flash.renderOrder = 800;
+        flash.userData.flashFor = object.id;
+        group.add(flash);
+      }
     }
   }
 }
 
 /** Fade the spawn outlines out; drops them once they are gone. */
 function updateSpawnFlashes(now) {
+  if (prefersReducedMotion()) {
+    for (const child of group.children) {
+      if (!child.userData?.flashFor) continue;
+      child.material.opacity = 0;
+      child.visible = false;
+    }
+    spawned.clear();
+    return;
+  }
   if (!spawned.size || !group.children.length) return;
   for (const child of group.children) {
     const id = child.userData?.flashFor;
@@ -395,10 +424,13 @@ function syncDecor() {
 
 function syncEnvironment() {
   const env = kernel.environment;
+  // The kernel is the source of truth. Derive the override from the current
+  // environment so a failed set_environment (which never mutates the kernel)
+  // and a reset/undo back to the default both clear a stale agent background.
   const explicit = env.background && env.background !== KERNEL_DEFAULT_BACKGROUND
     ? String(env.background)
     : null;
-  if (explicit) agentBackground = explicit;
+  agentBackground = explicit;
 
   syncDecor();
 
@@ -413,7 +445,10 @@ function syncEnvironment() {
   if (hemi) hemi.intensity = (env.ambient_intensity ?? 0.35) * 1.7;
   const vignette = document.querySelector('.viewport-vignette');
   if (vignette) {
-    vignette.style.opacity = String(Math.min(1, Math.max(0, (env.post?.vignette ?? 0.15) * 2 + 0.45)));
+    // Preserve set_environment's semantics: 0 disables the overlay and larger
+    // values increase it, instead of remapping every input into 0.45..1.
+    const value = env.post?.vignette ?? 0.15;
+    vignette.style.opacity = String(Math.min(1, Math.max(0, value)));
   }
 }
 
@@ -438,6 +473,12 @@ const cameraTween = {
 
 function tweenCamera(toPosition, toTarget, duration = 640, ease = easeInOutCubic) {
   if (!camera || !controls) return;
+  if (prefersReducedMotion()) {
+    camera.position.copy(toPosition);
+    controls.target.copy(toTarget);
+    cameraTween.active = false;
+    return;
+  }
   cameraTween.fromPosition.copy(camera.position);
   cameraTween.fromTarget.copy(controls.target);
   cameraTween.toPosition.copy(toPosition);
@@ -450,6 +491,12 @@ function tweenCamera(toPosition, toTarget, duration = 640, ease = easeInOutCubic
 
 function updateCameraTween(now) {
   if (!cameraTween.active || !camera || !controls) return;
+  if (prefersReducedMotion()) {
+    camera.position.copy(cameraTween.toPosition);
+    controls.target.copy(cameraTween.toTarget);
+    cameraTween.active = false;
+    return;
+  }
   const k = clamp01((now - cameraTween.start) / cameraTween.duration);
   const eased = cameraTween.ease(k);
   camera.position.lerpVectors(cameraTween.fromPosition, cameraTween.toPosition, eased);
@@ -462,6 +509,11 @@ const intro = { active: false, start: 0, duration: 1300 };
 
 function updateIntro(now) {
   if (!intro.active) return;
+  if (prefersReducedMotion()) {
+    intro.active = false;
+    group.scale.setScalar(1);
+    return;
+  }
   const k = clamp01((now - intro.start) / intro.duration);
   group.scale.setScalar(0.955 + 0.045 * easeOutExpo(k));
   if (k >= 1) {
@@ -483,6 +535,7 @@ function gotoView(args, duration = 640) {
   if (result.ok === false) return result;
   lastCameraSignature = cameraSignature();
   syncCamera(); // projection, fov, up, near/far — the position is ours now
+  if (prefersReducedMotion()) return result; // land on the new camera, no flight
   camera.position.copy(fromPosition);
   controls.target.copy(fromTarget);
   tweenCamera(
@@ -546,6 +599,12 @@ function setGizmoVisibility(visible) {
   if (!gizmoEl) return;
   gizmoEl.classList.toggle('is-hidden', !visible);
   gizmoEl.setAttribute('aria-hidden', String(!visible));
+  // `pointer-events: none` only stops the mouse — hidden axes must also leave
+  // the keyboard tab order so no one can focus and trigger an invisible view.
+  for (const node of gizmoEl.querySelectorAll('[data-axis]')) {
+    node.setAttribute('tabindex', visible ? '0' : '-1');
+    if (!visible && node === document.activeElement) node.blur();
+  }
 }
 
 /* ------------------------------------------------------------ loop */
@@ -602,8 +661,12 @@ function setStat(node, value) {
   const state = counters.get(node) || { displayed: 0, target: 0, raf: 0 };
   counters.set(node, state);
   state.target = target;
-  if (state.displayed === target) {
+  cancelAnimationFrame(state.raf);
+  state.raf = 0;
+  if (prefersReducedMotion() || state.displayed === target) {
+    state.displayed = target;
     node.textContent = target.toLocaleString();
+    node.classList.remove('is-counting');
     return;
   }
   // A batch of calls lands in one synchronous burst, so always animate from
@@ -611,7 +674,6 @@ function setStat(node, value) {
   const from = state.displayed;
   const start = performance.now();
   const duration = 420;
-  cancelAnimationFrame(state.raf);
   node.classList.add('is-counting');
   const step = (now) => {
     if (state.target !== target) return; // a newer count took over
@@ -792,7 +854,7 @@ function applyTheme(next, { animate = true } = {}) {
   theme = next === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.theme = theme;
   writeStoredTheme(theme);
-  if (animate) {
+  if (animate && !prefersReducedMotion()) {
     el('theme-toggle')?.animate?.(
       [{ transform: 'rotate(0deg) scale(1)' }, { transform: 'rotate(180deg) scale(0.86)' }, { transform: 'rotate(360deg) scale(1)' }],
       { duration: 520, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
@@ -830,9 +892,11 @@ function flashBusy() {
 /** Roll a number up from 0 — used for the per-call millisecond readout. */
 function countUpMs(node, target) {
   if (!target) { node.textContent = '0ms'; return; }
+  if (prefersReducedMotion()) { node.textContent = `${target}ms`; return; }
   const start = performance.now();
   const duration = Math.min(320, 120 + target * 2);
   const step = (now) => {
+    if (prefersReducedMotion()) { node.textContent = `${target}ms`; return; }
     const k = clamp01((now - start) / duration);
     node.textContent = `${Math.round(target * easeOutExpo(k))}ms`;
     if (k < 1) requestAnimationFrame(step);
@@ -846,10 +910,10 @@ server.subscribe((event) => {
   el('tab-count-calls').textContent = String(callCount);
   bump(el('tab-count-calls'));
 
-  if (event.tool === 'set_environment' && event.args?.background) {
-    agentBackground = String(event.args.background);
-  }
-
+  // Do not trust event args here: a failed set_environment still carries the
+  // requested values, but never mutates the kernel. The viewport background is
+  // synchronized from kernel.environment in syncEnvironment(), which only runs
+  // when a mutation by the kernel actually happened.
   const failed = event.type === 'error' || event.result?.ok === false;
   const entry = document.createElement('div');
   entry.className = `call${failed ? ' is-error' : ''}`;
@@ -910,21 +974,27 @@ for (const node of document.querySelectorAll('#axis-gizmo [data-axis]')) {
   });
 }
 
+function syncToggleState(button, on) {
+  if (!button) return;
+  button.classList.toggle('is-on', on);
+  button.setAttribute('aria-pressed', String(on));
+}
+
 el('toggle-grid').addEventListener('click', (event) => {
   grid.visible = !grid.visible;
   groundShadow.visible = grid.visible;
-  event.currentTarget.classList.toggle('is-on', grid.visible);
+  syncToggleState(event.currentTarget, grid.visible);
 });
 
 el('toggle-axes').addEventListener('click', (event) => {
   axes.visible = !axes.visible;
-  event.currentTarget.classList.toggle('is-on', axes.visible);
+  syncToggleState(event.currentTarget, axes.visible);
   setGizmoVisibility(axes.visible);
 });
 
 el('toggle-wire').addEventListener('click', (event) => {
   wireframe = !wireframe;
-  event.currentTarget.classList.toggle('is-on', wireframe);
+  syncToggleState(event.currentTarget, wireframe);
   markDirty();
 });
 
@@ -1032,18 +1102,21 @@ resize();
 markDirty();
 
 // Opening move: pull back, then fly into the framed scene as the shell fades up.
+// With prefers-reduced-motion, land directly on the framed view instead.
 if (camera && controls) {
   lastCameraSignature = cameraSignature();
   syncCamera();
-  const framed = camera.position.clone();
-  const target = controls.target.clone();
-  const offset = framed.clone().sub(target).multiplyScalar(1.85);
-  offset.y += 1.4;
-  camera.position.copy(target.clone().add(offset));
-  tweenCamera(framed, target, 1500, easeOutExpo);
-  intro.active = true;
-  intro.start = performance.now();
   setActiveView('frame');
+  if (!prefersReducedMotion()) {
+    const framed = camera.position.clone();
+    const target = controls.target.clone();
+    const offset = framed.clone().sub(target).multiplyScalar(1.85);
+    offset.y += 1.4;
+    camera.position.copy(target.clone().add(offset));
+    tweenCamera(framed, target, 1500, easeOutExpo);
+    intro.active = true;
+    intro.start = performance.now();
+  }
 }
 
 tick();
